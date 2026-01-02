@@ -8,6 +8,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
-add_subdirectory(src)
-add_subdirectory(third_part)
+include_directories(third_party/capstone/include)
 
+add_subdirectory(third_party)
+
+
+add_subdirectory(src)
