@@ -1,14 +1,27 @@
 
 set(
     PARSER_SRC_LIST
+    BinaryTypes.h
+    BinaryModule.h
+    BinaryModule.cpp
+    PEBinaryModule.h
+    PEBinaryModule.cpp
     Parser.h
     Parser.cpp
+    Instruction.h
+    Instruction.cpp
+    BasicBlock.h
+    BasicBlock.cpp
+    Function.h
+    Function.cpp
+    CrossReference.h
+    CrossReference.cpp
     main.cpp
 )
 
 add_executable(Parser ${PARSER_SRC_LIST})
 
-target_link_libraries(Parser PRIVATE capstone)
+target_link_libraries(Parser PRIVATE capstone LIB_LIEF)
 
 set_target_properties(Parser PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin"
