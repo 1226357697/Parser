@@ -14,6 +14,14 @@ set(
     BasicBlock.cpp
     Function.h
     Function.cpp
+    Architecture.h
+    Architecture.cpp
+    Disassembler.h
+    Disassembler.cpp
+    CapstoneDisassembler.h
+    CapstoneDisassembler.cpp
+    X86Architecture.h
+    X86Architecture.cpp
     CrossReference.h
     CrossReference.cpp
     main.cpp

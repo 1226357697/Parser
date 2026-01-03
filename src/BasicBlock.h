@@ -9,6 +9,17 @@
 class BasicBlock
 {
 public:
+	enum class EndTYpe
+	{
+		Invalid = 0,
+		Jump,
+		ConditionalJump,
+		Return,
+		Call,
+		FallThrough
+	};
+
+public:
 	BasicBlock(RVA_t rva);
 
 	~BasicBlock();
@@ -16,6 +27,7 @@ public:
 	void addInstruction(std::shared_ptr<Instruction> inst);
 	size_t getSize();
 
+	EndTYpe endType();
 private:
 	RVA_t startAddress_;
 	RVA_t endAddress_;

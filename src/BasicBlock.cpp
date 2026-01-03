@@ -17,3 +17,8 @@ size_t BasicBlock::getSize()
 {
   return endAddress_;
 }
+
+BasicBlock::EndTYpe BasicBlock::endType()
+{
+  return EndTYpe::Invalid;
+}

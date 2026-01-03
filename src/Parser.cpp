@@ -9,13 +9,13 @@ bool Parser::parseFunctions()
 {
   // collect entrances
   collectEntrance();
-  if(entrances_.empty())
+  if(workList_.empty())
     return true;
 
-  while (true)
+  while (!workList_.empty())
   {
-    RVA_t rva = entrances_.top();
-    entrances_.pop();
+    RVA_t rva = workList_.top();
+    workList_.pop();
     parseFunction(rva);
   }
 
@@ -24,7 +24,12 @@ bool Parser::parseFunctions()
 
 bool Parser::parseFunction(RVA_t rva)
 {
-  
+  RVA_t currentRva = rva;
+  while (auto inst = bin_.disassembleOne(currentRva))
+  {
+    
+    currentRva += inst->size();
+  }
 
   return true;
 }
@@ -35,11 +40,11 @@ void Parser::collectEntrance()
 
   if (bin_.entryPoint() != 0)
   {
-    entrances_.push(bin_.entryPoint());
+    workList_.push(bin_.entryPoint());
   }
 
   for (auto& item : bin_.exportFunctions())
   {
-    entrances_.push(item.rva);
+    workList_.push(item.rva);
   }
 }

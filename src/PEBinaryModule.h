@@ -7,6 +7,9 @@ class PEBinaryModule : public BinaryModule
 
 public:
 
-  virtual bool load(const std::string& path) override;
+protected:
+  virtual bool doLoad(const std::string& path) override;
+
 private:
+
 };

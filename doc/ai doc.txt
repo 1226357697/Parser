@@ -1,0 +1,2115 @@
+> 已经有了ida， 还需要radare2吗?
+
+● 取决于你的使用场景。简单回答：大多数情况下不需要，但radare2在某些场景有独特价值。
+
+  IDA vs radare2 对比
+
+  | 方面     | IDA               | radare2                 |
+  |----------|-------------------|-------------------------|
+  | GUI      | 优秀              | 有Cutter，但不如IDA     |
+  | 反编译   | Hex-Rays 行业顶级 | Ghidra插件/有限支持     |
+  | 自动分析 | 更智能            | 需要更多手动操作        |
+  | 脚本化   | IDAPython         | r2pipe，更适合CLI自动化 |
+  | 价格     | 昂贵              | 免费开源                |
+
+  可能需要radare2的场景
+
+  1. 自动化/批处理 - r2的命令行设计更适合脚本批量分析
+  2. 嵌入式/IoT - 支持更多冷门架构
+  3. 轻量快速查看 - 不想启动IDA时快速看一眼二进制
+  4. CTF比赛 - 某些题目用r2更顺手
+  5. 服务器端部署 - 无GUI环境下的分析
+
+  建议
+
+  - 如果IDA已经满足你的日常需求，不用装radare2
+  - 如果你经常做自动化分析或需要CLI工具，可以考虑作为补充
+  - 如果预算有限没有IDA，radare2 + Ghidra是免费替代方案
+
+  你主要做什么类型的逆向分析？
+
+> 自动化/批处理 r2 强在哪里？
+
+● r2 的设计哲学就是 "一切皆命令"，天然适合脚本化。
+
+  核心优势
+
+  1. 命令行原生设计
+
+  # 一行命令提取所有函数名
+  r2 -q -c "aaa; afl" target.exe
+
+  # 批量分析目录下所有二进制
+  for f in *.exe; do r2 -q -c "aaa; iI" "$f" >> report.txt; done
+
+  IDA 虽然有 idat（headless模式），但配置复杂，启动慢。
+
+  2. r2pipe - 多语言绑定
+
+  import r2pipe
+
+  r2 = r2pipe.open("malware.exe")
+  r2.cmd("aaa")  # 分析
+  funcs = r2.cmdj("aflj")  # 返回JSON
+
+  for f in funcs:
+      print(f["name"], hex(f["offset"]))
+
+  支持 Python、JS、Go、Rust 等，直接嵌入你的工具链。
+
+  3. JSON 输出
+
+  # 几乎所有命令加 j 后缀输出JSON
+  r2 -q -c "aaa; aflj" target.exe | jq '.[] | .name'
+
+  便于管道处理和数据解析。
+
+  4. 无GUI依赖
+
+  - 服务器/Docker环境直接运行
+  - 资源占用小，启动秒级
+  - 适合CI/CD集成（如自动化恶意软件分析管道）
+
+  典型应用场景
+
+  | 场景           | r2 做法                 |
+  |----------------|-------------------------|
+  | 批量提取字符串 | r2 -q -c "izj" *.bin    |
+  | 对比两个二进制 | radiff2 a.exe b.exe     |
+  | 自动化漏洞扫描 | r2pipe + 自定义规则脚本 |
+  | 恶意软件分类   | 提取特征 → 机器学习     |
+
+  IDA 的局限
+
+  - headless 模式需要额外许可证（IDA Teams/Batch）
+  - IDAPython 脚本依赖IDA环境
+  - 启动一个实例就要几秒到十几秒
+
+  ---
+  如果你只是偶尔写个脚本分析单个文件，IDAPython 够用。但如果要 批量处理几百上千个样本，r2 效率高很多。
+
+> 我使用git + cmake开发， 我想添加一个第三方应该怎么做，拿capstone举例
+
+● 有几种主流方式，推荐程度从高到低：
+
+  方式1：FetchContent（推荐）
+
+  CMake 3.11+，最简洁，无需额外操作：
+
+  include(FetchContent)
+
+  FetchContent_Declare(
+      capstone
+      GIT_REPOSITORY https://github.com/capstone-engine/capstone.git
+      GIT_TAG        5.0.1  # 指定版本
+  )
+
+  FetchContent_MakeAvailable(capstone)
+
+  # 使用
+  target_link_libraries(your_target PRIVATE capstone)
+
+  优点：一键构建，无需手动管理
+  缺点：每次clean build会重新下载
+
+  ---
+  方式2：Git Submodule + add_subdirectory
+
+  # 添加 submodule
+  git submodule add https://github.com/capstone-engine/capstone.git third_party/capstone
+  git submodule update --init --recursive
+
+  # CMakeLists.txt
+  add_subdirectory(third_party/capstone)
+  target_link_libraries(your_target PRIVATE capstone)
+
+  优点：版本锁定在仓库里，clone后 git submodule update --init 即可
+  缺点：需要手动管理submodule
+
+  ---
+  方式3：find_package（系统安装）
+
+  先安装 capstone：
+  # vcpkg
+  vcpkg install capstone
+
+  # 或系统包管理器
+  sudo apt install libcapstone-dev  # Ubuntu
+
+  find_package(capstone REQUIRED)
+  target_link_libraries(your_target PRIVATE capstone::capstone)
+
+  优点：编译快，不重复构建
+  缺点：依赖外部环境，跨平台麻烦
+
+  ---
+  推荐项目结构
+
+  your_project/
+  ├── CMakeLists.txt
+  ├── src/
+  ├── include/
+  └── third_party/       # submodule 方式放这里
+      └── capstone/
+
+  ---
+  我的建议
+
+  | 场景                      | 推荐方式      |
+  |---------------------------|---------------|
+  | 小项目/快速原型           | FetchContent  |
+  | 正式项目/团队协作         | Git Submodule |
+  | 已有包管理器(vcpkg/conan) | find_package  |
+
+  你项目目前用的是哪种依赖管理方式？还是第一次添加第三方库？
+
+> 我在纠结 FetchContent 和 Git Submodule + add_subdirectory， 我应该怎么选择
+
+● 核心区别就一点：依赖由谁管理
+
+  |          | FetchContent    | Git Submodule        |
+  |----------|-----------------|----------------------|
+  | 依赖存储 | CMake构建时下载 | Git仓库里            |
+  | 版本控制 | CMakeLists.txt  | .gitmodules + commit |
+  | 离线构建 | ❌ 需要网络     | ✅ clone后即可       |
+  | 仓库体积 | 小              | 大（含依赖）         |
+  | CI缓存   | 需额外配置      | 天然支持             |
+
+  ---
+  选 Git Submodule 的情况
+
+  - 需要离线构建（内网环境、出差）
+  - CI/CD 频繁构建，不想每次重新下载
+  - 依赖库你可能需要修改源码
+  - 团队成员网络环境不稳定
+
+  选 FetchContent 的情况
+
+  - 个人项目，不在乎构建时下载
+  - 依赖较多，不想让仓库太臃肿
+  - 依赖库更新频繁，想方便切换版本
+  - 纯净主义，仓库只放自己的代码
+
+  ---
+  实际体验差异
+
+  # Git Submodule
+  git clone --recursive your_repo  # 一次搞定
+  cmake -B build && cmake --build build  # 立即构建
+
+  # FetchContent
+  git clone your_repo
+  cmake -B build  # ← 这里开始下载依赖，可能卡住
+
+  ---
+  我的建议
+
+  默认选 Git Submodule，因为：
+
+  1. 构建可预测，不依赖网络
+  2. git log 能看到依赖版本变更历史
+  3. 大多数开源项目都这么做
+
+  除非你明确讨厌 submodule 的额外命令（git submodule update --init）。
+
+  ---
+  要不要我给一个结合两者优点的混合方案？（本地用submodule，fallback到FetchContent）
+
+> 使用 Git Submodule + add_subdirectory后 如果修改了capstone 源码会怎么样？
+
+● Git 会检测到变更，但分两层管理：
+
+  修改后的状态
+
+  # 假设你改了 capstone 的某个文件
+  cd third_party/capstone
+  echo "// hack" >> cs.c
+
+  # 回到主仓库查看状态
+  cd ../..
+  git status
+
+  输出：
+  Changes not staged for commit:
+      modified:   third_party/capstone (modified content)
+
+  注意是 (modified content)，不是具体文件名。主仓库只知道 submodule 有变化，不知道改了什么。
+
+  ---
+  你有两个选择
+
+  选项1：提交修改（Fork 模式）
+
+  # 1. 进入 submodule 提交
+  cd third_party/capstone
+  git add -A
+  git commit -m "my custom patch"
+
+  # 2. 回主仓库，更新 submodule 引用
+  cd ../..
+  git add third_party/capstone
+  git commit -m "update capstone to patched version"
+
+  问题：你的 commit 在本地，push 到哪？
+
+  → 需要 fork capstone，把 submodule 指向你的 fork：
+  cd third_party/capstone
+  git remote set-url origin git@github.com:YOU/capstone.git
+  git push
+
+  选项2：放弃修改
+
+  cd third_party/capstone
+  git checkout .  # 丢弃所有修改
+
+  ---
+  实际项目中的做法
+
+  | 情况           | 推荐做法                          |
+  |----------------|-----------------------------------|
+  | 临时调试/实验  | 改完测完就 git checkout . 还原    |
+  | 长期需要的补丁 | Fork 并维护自己的分支             |
+  | 通用性修复     | 给上游提 PR，合并后更新 submodule |
+
+  ---
+  一个坑
+
+  如果团队成员 clone 你的仓库：
+  git clone --recursive your_repo
+
+  他们拉到的是 你提交时指向的那个 commit，包含你的修改（前提是你 push 到了可访问的 remote）。
+
+  如果你只本地 commit 没 push，别人拉取会报错。
+
+> cpp 类名是BinaryModule 风格， 结构体风格应该是什么样的，
+
+● C++ 中 struct 和 class 几乎等价，所以主流做法是用同样的 PascalCase：
+
+  class  BinaryModule { ... };   // 类
+  struct BinaryModuleInfo { ... };  // 结构体，同风格
+
+  ---
+  常见流派
+
+  | 风格              | 类           | 结构体                       | 代表项目              |
+  |-------------------|--------------|------------------------------|-----------------------|
+  | 统一 PascalCase   | BinaryModule | ModuleInfo                   | Google, LLVM, Qt      |
+  | C 风格 snake_case | BinaryModule | module_info 或 module_info_t | Linux kernel 风格混用 |
+  | 后缀区分          | BinaryModule | BinaryModuleData             | 自定义                |
+
+  ---
+  实践建议
+
+  用语义而非关键字区分：
+
+  // 类：有行为、有不变量、需要封装
+  class BinaryModule {
+  public:
+      void load();
+  private:
+      Handle handle_;
+  };
+
+  // 结构体：纯数据、公开字段、POD-like
+  struct ModuleInfo {
+      std::string name;
+      uint64_t base_addr;
+      size_t size;
+  };
+
+  命名风格一致，都用 PascalCase，靠用途区分，不靠大小写区分。
+
+  ---
+  如果你想视觉区分
+
+  有些人喜欢给纯数据结构体加后缀：
+
+  struct ModuleInfo { ... };    // 数据
+  struct ModuleConfig { ... };  // 配置
+  struct ModuleResult { ... };  // 返回结果
+
+  后缀本身暗示了"这是数据容器"。
+
+  ---
+  你们项目有现成的代码规范吗？还是从零开始定？
+
+> 从零开始定， 拿枚举类型呢？
+
+● 枚举要定两个东西：类型名 和 枚举值
+
+  推荐风格
+
+  // 类型名：PascalCase（和 class/struct 统一）
+  // 枚举值：kPascalCase 或 PascalCase
+  enum class ModuleType {
+      Executable,
+      SharedLibrary,
+      StaticLibrary,
+  };
+
+  ---
+  枚举值常见流派
+
+  | 风格        | 示例        | 代表                     |
+  |-------------|-------------|--------------------------|
+  | PascalCase  | Executable  | LLVM, Qt                 |
+  | kPascalCase | kExecutable | Google C++ Style         |
+  | ALL_CAPS    | EXECUTABLE  | C 传统，Windows API      |
+  | snake_case  | executable  | STL (std::launch::async) |
+
+  ---
+  我的建议
+
+  // ✅ 用 enum class（强类型，有作用域）
+  enum class ModuleType {
+      Executable,
+      SharedLibrary,
+      Unknown,
+  };
+
+  // 使用时
+  ModuleType type = ModuleType::Executable;
+
+  不推荐传统 enum：
+  // ❌ 污染命名空间，容易冲突
+  enum ModuleType {
+      Executable,      // 全局可见
+      SharedLibrary,
+  };
+
+  ---
+  完整规范建议
+
+  | 类型      | 风格                    | 示例                         |
+  |-----------|-------------------------|------------------------------|
+  | 类/结构体 | PascalCase              | BinaryModule                 |
+  | 枚举类型  | PascalCase              | ModuleType                   |
+  | 枚举值    | PascalCase              | ModuleType::Executable       |
+  | 函数      | PascalCase 或 camelCase | LoadModule() 或 loadModule() |
+  | 变量      | snake_case              | module_info                  |
+  | 成员变量  | snake_case_             | module_info_                 |
+  | 常量      | kPascalCase             | kMaxSize                     |
+  | 宏        | ALL_CAPS                | DEBUG_LOG                    |
+
+  这基本是 Google/LLVM 风格的混合，业界接受度高。
+
+  要定函数和变量的风格吗？
+
+> 结构体的字段呢？
+
+● 结构体字段和类成员变量要区分对待：
+
+  // 类：私有成员，带下划线后缀
+  class BinaryModule {
+  private:
+      std::string name_;
+      uint64_t base_addr_;
+  };
+
+  // 结构体：公开字段，不带后缀
+  struct ModuleInfo {
+      std::string name;
+      uint64_t base_addr;
+      size_t size;
+  };
+
+  ---
+  原因
+
+  |        | 类成员                | 结构体字段                |
+  |--------|-----------------------|---------------------------|
+  | 访问性 | 通常 private          | 通常 public               |
+  | 后缀 _ | ✅ 区分成员和局部变量 | ❌ 不需要，本来就直接访问 |
+  | 用途   | 有封装、有不变量      | 纯数据容器                |
+
+  ---
+  使用体验
+
+  ModuleInfo info;
+  info.name = "test";       // ✅ 干净
+  info.name_ = "test";      // ❌ 别扭
+
+  module.name_ = "x";       // 类内部用，合理
+  module.getName();         // 外部用接口
+
+  ---
+  完整规范（更新）
+
+  | 类型          | 风格        | 示例                     |
+  |---------------|-------------|--------------------------|
+  | 类名/结构体名 | PascalCase  | BinaryModule, ModuleInfo |
+  | 枚举类型      | PascalCase  | ModuleType               |
+  | 枚举值        | PascalCase  | ModuleType::Executable   |
+  | 类私有成员    | snake_case_ | base_addr_               |
+  | 结构体字段    | snake_case  | base_addr                |
+  | 局部变量      | snake_case  | module_count             |
+  | 函数/方法     | PascalCase  | LoadModule()             |
+  | 常量          | kPascalCase | kMaxSize                 |
+
+  这样一眼就能区分"这是类的封装成员"还是"纯数据字段"。
+
+> 二进制分析中，应该把正汇编器和反汇编器封装成一个Archtiecture类吗？
+
+● 这是个经典的架构设计问题。看看业界怎么做的：
+
+  业界做法
+
+  | 项目              | 设计                                 |
+  |-------------------|--------------------------------------|
+  | Capstone/Keystone | 分离，两个独立库                     |
+  | LLVM              | 分离，MCDisassembler / MCCodeEmitter |
+  | Binary Ninja      | 统一，Architecture 类包含两者        |
+  | Ghidra            | 统一，Language 包含指令语义          |
+
+  ---
+  两种设计
+
+  方案1：统一到 Architecture
+
+  class Architecture {
+  public:
+      virtual std::string name() const = 0;
+      virtual size_t pointerSize() const = 0;
+
+      // 反汇编
+      virtual DisassembleResult disassemble(const uint8_t* code, size_t size, uint64_t addr) = 0;
+
+      // 汇编
+      virtual AssembleResult assemble(const std::string& asm_text, uint64_t addr) = 0;
+  };
+
+  优点：API 简洁，用户拿到一个对象就能干所有事
+  缺点：类职责较多，可能变臃肿
+
+  方案2：分离 + 工厂
+
+  class Architecture {
+  public:
+      virtual std::string name() const = 0;
+      virtual size_t pointerSize() const = 0;
+
+      virtual std::unique_ptr<Disassembler> createDisassembler() = 0;
+      virtual std::unique_ptr<Assembler> createAssembler() = 0;
+  };
+
+  class Disassembler {
+  public:
+      virtual DisassembleResult disassemble(const uint8_t* code, size_t size, uint64_t addr) = 0;
+  };
+
+  优点：职责分离，按需创建
+  缺点：API 多一层
+
+  ---
+  我的建议
+
+  用方案2（分离 + 工厂），理由：
+
+  1. 按需加载 - 反汇编用 Capstone，汇编用 Keystone，可以独立替换
+  2. 不是所有架构都支持汇编 - 有些你只有反汇编器
+  3. 状态隔离 - Disassembler 可能有缓存、模式设置，独立更清晰
+  4. 测试更容易 - 可以单独 mock
+
+  auto arch = ArchitectureRegistry::get("x86_64");
+  auto disasm = arch->createDisassembler();
+
+  // 只用反汇编，不关心汇编器
+  auto result = disasm->disassemble(code, size, addr);
+
+  ---
+  你的场景需要汇编功能吗？还是主要做反汇编分析？
+
+> 先当只做反汇编分析，但是后面可以会需要修改只能进行正汇编
+
+● 那就先做减法，预留扩展点：
+
+  现阶段设计
+
+  class Architecture {
+  public:
+      virtual ~Architecture() = default;
+
+      virtual std::string name() const = 0;
+      virtual size_t pointerSize() const = 0;
+      virtual Endian endian() const = 0;
+
+      virtual std::unique_ptr<Disassembler> createDisassembler() = 0;
+
+      // 未来加这个，现在不实现
+      // virtual std::unique_ptr<Assembler> createAssembler() = 0;
+  };
+
+  class Disassembler {
+  public:
+      virtual ~Disassembler() = default;
+      virtual DisassembleResult disassemble(std::span<const uint8_t> code, uint64_t addr) = 0;
+  };
+
+  现在就这些，干净。
+
+  ---
+  未来加汇编时
+
+  两种方式，无需改现有代码：
+
+  方式1：直接加方法（推荐）
+
+  class Architecture {
+  public:
+      // ... 现有接口不变
+
+      virtual std::unique_ptr<Assembler> createAssembler() {
+          return nullptr;  // 默认不支持
+      }
+
+      bool supportsAssemble() const {
+          return createAssembler() != nullptr;
+      }
+  };
+
+  方式2：运行时能力查询
+
+  class Architecture {
+  public:
+      enum class Capability {
+          Disassemble,
+          Assemble,
+          Lift,  // 未来可能还有 IR lifting
+      };
+
+      virtual bool supports(Capability cap) const = 0;
+  };
+
+  ---
+  建议
+
+  现在用方式1 的简化版，连 createAssembler 都不用写：
+
+  // architecture.h - 现在
+  class Architecture {
+  public:
+      virtual std::unique_ptr<Disassembler> createDisassembler() = 0;
+  };
+
+  // 半年后需要汇编了，直接加
+  class Architecture {
+  public:
+      virtual std::unique_ptr<Disassembler> createDisassembler() = 0;
+      virtual std::unique_ptr<Assembler> createAssembler() = 0;  // 新增
+  };
+
+  纯虚函数加上去，编译器会告诉你哪些子类需要实现。
+
+  ---
+  YAGNI 原则：现在不需要，就不写。接口加方法是向后兼容的，不用担心。
+
+  要我给一个 Disassembler 封装 Capstone 的示例吗？
+
+> 给一个 Disassembler 封装 Capstone 的示例
+
+● // ==================== disassembler.h ====================
+  #pragma once
+  #include <cstdint>
+  #include <span>
+  #include <string>
+  #include <vector>
+
+  struct Instruction {
+      uint64_t address;
+      std::vector<uint8_t> bytes;
+      std::string mnemonic;
+      std::string operands;
+
+      std::string text() const {
+          return mnemonic + " " + operands;
+      }
+  };
+
+  struct DisassembleResult {
+      std::vector<Instruction> instructions;
+      size_t bytes_consumed;
+  };
+
+  class Disassembler {
+  public:
+      virtual ~Disassembler() = default;
+      virtual DisassembleResult disassemble(std::span<const uint8_t> code, uint64_t addr) = 0;
+  };
+
+  // ==================== capstone_disasm.h ====================
+  #pragma once
+  #include "disassembler.h"
+  #include <capstone/capstone.h>
+  #include <stdexcept>
+
+  class CapstoneDisassembler : public Disassembler {
+  public:
+      CapstoneDisassembler(cs_arch arch, cs_mode mode) {
+          if (cs_open(arch, mode, &handle_) != CS_ERR_OK) {
+              throw std::runtime_error("Failed to initialize Capstone");
+          }
+          cs_option(handle_, CS_OPT_DETAIL, CS_OPT_ON);
+      }
+
+      ~CapstoneDisassembler() override {
+          cs_close(&handle_);
+      }
+
+      // 禁止拷贝
+      CapstoneDisassembler(const CapstoneDisassembler&) = delete;
+      CapstoneDisassembler& operator=(const CapstoneDisassembler&) = delete;
+
+      DisassembleResult disassemble(std::span<const uint8_t> code, uint64_t addr) override {
+          DisassembleResult result{};
+          cs_insn* insn = nullptr;
+
+          size_t count = cs_disasm(handle_, code.data(), code.size(), addr, 0, &insn);
+
+          if (count > 0) {
+              result.instructions.reserve(count);
+              for (size_t i = 0; i < count; i++) {
+                  result.instructions.push_back({
+                      .address = insn[i].address,
+                      .bytes = {insn[i].bytes, insn[i].bytes + insn[i].size},
+                      .mnemonic = insn[i].mnemonic,
+                      .operands = insn[i].op_str,
+                  });
+                  result.bytes_consumed += insn[i].size;
+              }
+              cs_free(insn, count);
+          }
+
+          return result;
+      }
+
+  private:
+      csh handle_{};
+  };
+
+  // ==================== architecture.h ====================
+  #pragma once
+  #include "disassembler.h"
+  #include <memory>
+  #include <string>
+
+  enum class Endian { Little, Big };
+
+  class Architecture {
+  public:
+      virtual ~Architecture() = default;
+      virtual std::string name() const = 0;
+      virtual size_t pointerSize() const = 0;
+      virtual Endian endian() const = 0;
+      virtual std::unique_ptr<Disassembler> createDisassembler() = 0;
+  };
+
+  // ==================== arch_x86.h ====================
+  #pragma once
+  #include "architecture.h"
+  #include "capstone_disasm.h"
+
+  class ArchX86 : public Architecture {
+  public:
+      std::string name() const override { return "x86"; }
+      size_t pointerSize() const override { return 4; }
+      Endian endian() const override { return Endian::Little; }
+
+      std::unique_ptr<Disassembler> createDisassembler() override {
+          return std::make_unique<CapstoneDisassembler>(CS_ARCH_X86, CS_MODE_32);
+      }
+  };
+
+  class ArchX86_64 : public Architecture {
+  public:
+      std::string name() const override { return "x86_64"; }
+      size_t pointerSize() const override { return 8; }
+      Endian endian() const override { return Endian::Little; }
+
+      std::unique_ptr<Disassembler> createDisassembler() override {
+          return std::make_unique<CapstoneDisassembler>(CS_ARCH_X86, CS_MODE_64);
+      }
+  };
+
+  // ==================== 使用示例 ====================
+  #include "arch_x86.h"
+  #include <iostream>
+
+  int main() {
+      ArchX86_64 arch;
+      auto disasm = arch.createDisassembler();
+
+      // mov rax, rbx; ret
+      std::vector<uint8_t> code = {0x48, 0x89, 0xd8, 0xc3};
+
+      auto result = disasm->disassemble(code, 0x1000);
+
+      for (const auto& insn : result.instructions) {
+          std::cout << std::hex << insn.address << ": " << insn.text() << "\n";
+      }
+      // 输出:
+      // 1000: mov rax, rbx
+      // 1003: ret
+  }
+
+  ---
+  文件结构
+
+  include/
+  ├── disassembler.h
+  ├── capstone_disasm.h
+  ├── architecture.h
+  └── arch_x86.h
+
+  之后加 ARM 就新建 arch_arm.h，实现 ArchARM 即可。
+
+> Disassembler 应该和Architecture 还是BinaryModule， 绑定一下
+
+● 两者职责不同，Disassembler 由 Architecture 创建，但 BinaryModule 持有实例：
+
+  关系梳理
+
+  Architecture  ──创建──▶  Disassembler
+                                │
+                                │ 持有/使用
+                                ▼
+                          BinaryModule
+
+  ---
+  推荐设计
+
+  class BinaryModule {
+  public:
+      BinaryModule(std::vector<uint8_t> data, std::shared_ptr<Architecture> arch)
+          : data_(std::move(data))
+          , arch_(std::move(arch))
+          , disasm_(arch_->createDisassembler())  // 创建一次，复用
+      {}
+
+      // 对外接口：反汇编指定地址
+      DisassembleResult disassembleAt(uint64_t addr, size_t max_insns = 0) {
+          auto offset = addressToOffset(addr);
+          std::span<const uint8_t> code{data_.data() + offset, data_.size() - offset};
+          return disasm_->disassemble(code, addr);
+      }
+
+      Architecture& arch() const { return *arch_; }
+
+  private:
+      std::vector<uint8_t> data_;
+      std::shared_ptr<Architecture> arch_;
+      std::unique_ptr<Disassembler> disasm_;  // 复用，避免反复创建
+  };
+
+  ---
+  为什么这样设计
+
+  | 问题                          | 答案                           |
+  |-------------------------------|--------------------------------|
+  | 谁知道怎么创建 Disassembler？ | Architecture（知道 arch/mode） |
+  | 谁需要用 Disassembler？       | BinaryModule（有数据）         |
+  | Disassembler 能复用吗？       | 能，创建一次，多次调用         |
+
+  ---
+  使用示例
+
+  auto arch = std::make_shared<ArchX86_64>();
+  auto module = BinaryModule(loadFile("test.exe"), arch);
+
+  // 用户只管调用，不关心 Disassembler
+  auto result = module.disassembleAt(0x401000);
+
+  for (const auto& insn : result.instructions) {
+      std::cout << insn.text() << "\n";
+  }
+
+  ---
+  如果未来加 Assembler
+
+  同样模式：
+
+  class BinaryModule {
+      std::unique_ptr<Disassembler> disasm_;
+      std::unique_ptr<Assembler> asm_;  // 按需创建
+
+  public:
+      void patchAt(uint64_t addr, const std::string& asm_text) {
+          if (!asm_) {
+              asm_ = arch_->createAssembler();
+          }
+          auto result = asm_->assemble(asm_text, addr);
+          // 写入 data_...
+      }
+  };
+
+> castone 如何获取x86架构 最长指令长度？
+
+● Capstone 没有提供这个 API。x86 最长指令长度是架构规范定义的常量：15 字节。
+
+  ---
+  解决方案
+
+  自己在 Architecture 里定义：
+
+  class Architecture {
+  public:
+      virtual size_t maxInstructionSize() const = 0;
+      // ...
+  };
+
+  class ArchX86_64 : public Architecture {
+  public:
+      size_t maxInstructionSize() const override {
+          return 15;  // x86/x64 架构硬性规定
+      }
+  };
+
+  class ArchARM64 : public Architecture {
+  public:
+      size_t maxInstructionSize() const override {
+          return 4;   // ARM64 固定 4 字节
+      }
+  };
+
+  ---
+  各架构最长指令长度
+
+  | 架构    | 最长指令        | 说明             |
+  |---------|-----------------|------------------|
+  | x86/x64 | 15 字节         | Intel 手册规定   |
+  | ARM     | 4 字节          | 固定长度         |
+  | ARM64   | 4 字节          | 固定长度         |
+  | Thumb   | 4 字节          | 2 或 4 字节      |
+  | MIPS    | 4 字节          | 固定长度         |
+  | RISC-V  | 4 字节 (或更长) | 标准 4，扩展可变 |
+
+  ---
+  使用场景
+
+  // 反汇编单条指令时，确保读取足够数据
+  size_t bytesToRead = arch.maxInstructionSize();
+  auto code = module.readBytes(addr, bytesToRead);
+  auto result = disasm->disassemble(code, addr);
+
+  这个值是架构层面的，放在 Architecture 里合适。
+
+> LIEF::Binary 可以通过rva 读取指定位置的数据吗？
+
+● 可以，用 get_content_from_virtual_address()：
+
+  #include <LIEF/LIEF.hpp>
+
+  auto binary = LIEF::Parser::parse("test.exe");
+
+  // 方式1：直接用 VA（RVA + ImageBase）
+  uint64_t rva = 0x1000;
+  uint64_t va = binary->imagebase() + rva;
+  auto data = binary->get_content_from_virtual_address(va, 16);
+
+  // data 是 std::vector<uint8_t>
+  for (auto byte : data) {
+      printf("%02x ", byte);
+  }
+
+  ---
+  如果只有 RVA
+
+  // PE 文件
+  auto* pe = dynamic_cast<LIEF::PE::Binary*>(binary.get());
+  uint64_t va = pe->imagebase() + rva;
+  auto data = pe->get_content_from_virtual_address(va, size);
+
+  // ELF 文件（通常 imagebase 是 0 或加载地址）
+  auto* elf = dynamic_cast<LIEF::ELF::Binary*>(binary.get());
+  auto data = elf->get_content_from_virtual_address(rva, size);
+
+  ---
+  封装建议
+
+  class BinaryModule {
+  public:
+      std::vector<uint8_t> readAt(uint64_t rva, size_t size) {
+          uint64_t va = binary_->imagebase() + rva;
+          return binary_->get_content_from_virtual_address(va, size);
+      }
+
+  private:
+      std::unique_ptr<LIEF::Binary> binary_;
+  };
+
+  ---
+  注意事项
+
+  | 情况            | 行为               |
+  |-----------------|--------------------|
+  | 地址有效        | 返回数据           |
+  | 地址无效/未映射 | 返回空 vector      |
+  | 跨 section 读取 | 可能返回不完整数据 |
+
+  建议读之前检查返回的 size 是否符合预期。
+
+> 如何要服用，抽象的代码写在父类，具体可变的代码写在子类实现，
+拿子类调用父类的代码，位置应该在一开始，还是结尾，这个有标准和规范吗？， bool PEBinaryModule::load(const
+std::string& path)
+{
+  binary_ = LIEF::PE::Parser::parse(path);
+  if(!binary_)
+    return false;
+
+
+  return __super::load(path);
+}
+
+● 没有统一标准，取决于语义和依赖关系：
+
+  两种模式
+
+  模式1：先父类（前置检查/初始化）
+
+  bool PEBinaryModule::load(const std::string& path) {
+      // 父类先做通用检查/初始化
+      if (!BinaryModule::load(path))
+          return false;
+
+      // 子类再做特定工作
+      binary_ = LIEF::PE::Parser::parse(path);
+      return binary_ != nullptr;
+  }
+
+  适用：父类做前置验证（文件存在？权限？）
+
+  模式2：先子类（当前写法）
+
+  bool PEBinaryModule::load(const std::string& path) {
+      // 子类先准备数据
+      binary_ = LIEF::PE::Parser::parse(path);
+      if (!binary_)
+          return false;
+
+      // 父类依赖子类设置的数据
+      return BinaryModule::load(path);
+  }
+
+  适用：父类的逻辑依赖子类准备的状态
+
+  ---
+  更好的设计：模板方法模式
+
+  把"可变部分"分离出来，避免调用顺序问题：
+
+  class BinaryModule {
+  public:
+      // 固定流程，不可 override
+      bool load(const std::string& path) {
+          if (!std::filesystem::exists(path))
+              return false;
+
+          // 子类实现具体解析
+          if (!doLoad(path))
+              return false;
+
+          // 通用后处理
+          analyzeArchitecture();
+          return true;
+      }
+
+  protected:
+      // 子类只实现这个
+      virtual bool doLoad(const std::string& path) = 0;
+  };
+
+  class PEBinaryModule : public BinaryModule {
+  protected:
+      bool doLoad(const std::string& path) override {
+          binary_ = LIEF::PE::Parser::parse(path);
+          return binary_ != nullptr;
+      }
+  };
+
+  优点：子类不用关心调用顺序，父类控制流程。
+
+  ---
+  另外
+
+  __super 是 MSVC 扩展，不可移植。建议用显式类名：
+
+  // ❌ MSVC only
+  return __super::load(path);
+
+  // ✅ 标准 C++
+  return BinaryModule::load(path);
+
+  ---
+  总结
+
+  | 场景             | 调用顺序             |
+  |------------------|----------------------|
+  | 父类做前置检查   | 先父类               |
+  | 父类依赖子类状态 | 先子类               |
+  | 想避免混乱       | 模板方法模式（推荐） |
+
+> 二进制分析，存储地址使用rva好还是va好？
+
+● 两者各有场景，但推荐内部用 RVA，对外显示 VA：
+
+  对比
+
+  |             | RVA              | VA                  |
+  |-------------|------------------|---------------------|
+  | 定义        | 相对于 ImageBase | ImageBase + RVA     |
+  | 模块重定位  | 不变 ✅          | 会变                |
+  | 多模块分析  | 需要配合模块ID   | 天然唯一            |
+  | PE 内部结构 | 原生使用         | 需转换              |
+  | 用户熟悉度  | 较低             | 高（调试器显示 VA） |
+
+  ---
+  推荐方案
+
+  struct Address {
+      uint64_t rva;                    // 内部存储 RVA
+      BinaryModule* module = nullptr;  // 所属模块
+
+      uint64_t va() const {
+          return module ? module->imageBase() + rva : rva;
+      }
+  };
+
+  内部存 RVA，按需算 VA。
+
+  ---
+  理由
+
+  1. 存储稳定性
+
+  // ASLR 开启，每次加载 ImageBase 不同
+  // 第一次运行：ImageBase = 0x00400000, func VA = 0x00401000
+  // 第二次运行：ImageBase = 0x10000000, func VA = 0x10001000
+
+  // RVA 始终是 0x1000，分析结果可复用
+
+  2. PE 格式原生 RVA
+
+  // 导入表、导出表、重定位表全是 RVA
+  auto exports = pe->get_export();
+  for (auto& entry : exports.entries()) {
+      uint32_t rva = entry.address();  // 原生就是 RVA
+  }
+
+  3. 多模块支持
+
+  // 单用 VA 可能冲突
+  // module_a.dll VA 0x10001000
+  // module_b.dll VA 0x10001000  // 同一个地址！
+
+  // RVA + Module 组合唯一
+  struct GlobalAddress {
+      ModuleId module;
+      uint64_t rva;
+  };
+
+  ---
+  实际实现
+
+  class BinaryModule {
+  public:
+      uint64_t imageBase() const;
+
+      // 内部接口用 RVA
+      std::vector<uint8_t> readAt(uint64_t rva, size_t size);
+      DisassembleResult disassembleAt(uint64_t rva);
+
+      // 转换接口
+      uint64_t rvaToVa(uint64_t rva) const { return imageBase() + rva; }
+      uint64_t vaToRva(uint64_t va) const { return va - imageBase(); }
+  };
+
+  // UI/输出层显示 VA
+  void printInstruction(const Instruction& insn, BinaryModule& mod) {
+      uint64_t va = mod.rvaToVa(insn.address);
+      printf("%016llx: %s\n", va, insn.text().c_str());
+  }
+
+  ---
+  简单场景
+
+  如果只分析单个模块且不考虑 ASLR，直接用 VA 也行，省心：
+
+  // 简单粗暴，够用
+  uint64_t address;  // 直接存 VA
+
+  你的工具需要支持多模块分析吗？
+
+> 二进制分析中如何划分一个基本块，
+
+● 基本块（Basic Block）定义：单入口、单出口的连续指令序列。
+
+  边界规则
+
+  基本块开始（Leader）
+
+  1. 函数入口点
+  2. 跳转目标地址（被 jmp/jcc 指向）
+  3. 条件跳转的下一条指令（fall-through）
+  4. call 的下一条指令（可选）
+
+  基本块结束（Terminator）
+
+  1. 无条件跳转 jmp
+  2. 条件跳转 jcc（je, jne, jl...）
+  3. 返回 ret
+  4. 间接跳转 jmp rax
+  5. 调用 call（取决于策略）
+
+  ---
+  图解
+
+                ┌─────────────────┐
+                │ 0x1000: push rbp│
+                │ 0x1001: mov ... │
+                │ 0x1004: cmp ... │
+                │ 0x1007: je 0x1020│ ← 条件跳转，块结束
+                └────────┬────────┘
+                   ┌─────┴─────┐
+                   ▼           ▼
+      ┌────────────────┐  ┌────────────────┐
+      │ 0x1009: mov ...│  │ 0x1020: xor ...│ ← 跳转目标，新块开始
+      │ 0x100C: add ...│  │ 0x1023: ret    │
+      │ 0x100F: jmp 1020│  └────────────────┘
+      └────────────────┘
+
+  ---
+  算法实现
+
+  struct BasicBlock {
+      uint64_t start_rva;
+      uint64_t end_rva;
+      std::vector<Instruction> instructions;
+
+      enum class EndType {
+          Jump,           // jmp
+          ConditionalJump,// jcc
+          Return,         // ret
+          Call,           // call（可选是否分割）
+          FallThrough,    // 被其他跳转目标截断
+          Invalid,        // 非法指令
+      } end_type;
+
+      std::vector<uint64_t> successors;  // 后继块地址
+  };
+
+  class BasicBlockBuilder {
+  public:
+      std::vector<BasicBlock> build(uint64_t entry_rva) {
+          std::set<uint64_t> leaders;      // 所有块起始地址
+          std::queue<uint64_t> worklist;
+
+          // Pass 1: 收集所有 leader
+          leaders.insert(entry_rva);
+          worklist.push(entry_rva);
+
+          while (!worklist.empty()) {
+              uint64_t addr = worklist.front();
+              worklist.pop();
+
+              while (true) {
+                  auto insn = disassembleOne(addr);
+                  if (!insn) break;
+
+                  if (isConditionalJump(insn)) {
+                      uint64_t target = getJumpTarget(insn);
+                      uint64_t fallthrough = addr + insn.size;
+
+                      if (leaders.insert(target).second)
+                          worklist.push(target);
+                      if (leaders.insert(fallthrough).second)
+                          worklist.push(fallthrough);
+                      break;
+                  }
+
+                  if (isUnconditionalJump(insn)) {
+                      uint64_t target = getJumpTarget(insn);
+                      if (leaders.insert(target).second)
+                          worklist.push(target);
+                      break;
+                  }
+
+                  if (isReturn(insn)) {
+                      break;
+                  }
+
+                  addr += insn.size;
+              }
+          }
+
+          // Pass 2: 根据 leaders 构建基本块
+          return buildBlocks(leaders);
+      }
+  };
+
+  ---
+  关于 call 的处理
+
+  有两种策略：
+
+  | 策略   | call 处理     | 适用场景                   |
+  |--------|---------------|----------------------------|
+  | 不分割 | call 不结束块 | 简单分析，假设 call 必返回 |
+  | 分割   | call 结束块   | 精确分析，处理 noreturn    |
+
+  // 策略1：call 不分割（常见）
+  // 块内: [push, mov, call printf, mov, ret]
+
+  // 策略2：call 分割
+  // 块1: [push, mov, call printf]
+  // 块2: [mov, ret]
+
+  推荐先用策略1，遇到 exit()、abort() 等 noreturn 函数再特殊处理。
+
+  ---
+  常用指令分类（x86）
+
+  bool isConditionalJump(const Instruction& insn) {
+      // je, jne, jl, jg, jle, jge, jb, ja, js, jns...
+      return insn.mnemonic[0] == 'j' && insn.mnemonic != "jmp";
+  }
+
+  bool isUnconditionalJump(const Instruction& insn) {
+      return insn.mnemonic == "jmp";
+  }
+
+  bool isReturn(const Instruction& insn) {
+      return insn.mnemonic == "ret" || insn.mnemonic == "retf";
+  }
+
+  bool isCall(const Instruction& insn) {
+      return insn.mnemonic == "call";
+  }
+
+  你需要实现完整的 CFG（控制流图）构建吗？
+
+> 实现完整的 CFG 控制流图构建
+
+● // ==================== cfg_types.h ====================
+  #pragma once
+  #include <cstdint>
+  #include <vector>
+  #include <string>
+  #include <memory>
+  #include <unordered_map>
+  #include <unordered_set>
+  #include <set>
+  #include <queue>
+
+  struct Instruction {
+      uint64_t address;
+      size_t size;
+      std::string mnemonic;
+      std::string operands;
+      std::vector<uint8_t> bytes;
+
+      std::string text() const { return mnemonic + " " + operands; }
+      uint64_t nextAddress() const { return address + size; }
+  };
+
+  enum class EdgeType {
+      FallThrough,      // 顺序执行
+      ConditionalTrue,  // 条件跳转 - 跳转
+      ConditionalFalse, // 条件跳转 - 不跳转
+      Unconditional,    // 无条件跳转
+      Call,             // 调用
+      Return,           // 返回
+  };
+
+  enum class BlockEndType {
+      Invalid,
+      FallThrough,       // 被其他 leader 截断
+      ConditionalJump,   // jcc
+      UnconditionalJump, // jmp
+      IndirectJump,      // jmp rax
+      Call,              // call（可选分割）
+      Return,            // ret
+  };
+
+  // ==================== basic_block.h ====================
+  #pragma once
+  #include "cfg_types.h"
+
+  class BasicBlock {
+  public:
+      uint64_t startAddress() const { return start_; }
+      uint64_t endAddress() const { return end_; }
+      size_t size() const { return end_ - start_; }
+
+      const std::vector<Instruction>& instructions() const { return instructions_; }
+      BlockEndType endType() const { return end_type_; }
+
+      // 后继/前驱
+      const std::vector<uint64_t>& successors() const { return successors_; }
+      const std::vector<uint64_t>& predecessors() const { return predecessors_; }
+
+      void addSuccessor(uint64_t addr) { successors_.push_back(addr); }
+      void addPredecessor(uint64_t addr) { predecessors_.push_back(addr); }
+
+  private:
+      friend class CFGBuilder;
+
+      uint64_t start_ = 0;
+      uint64_t end_ = 0;
+      std::vector<Instruction> instructions_;
+      BlockEndType end_type_ = BlockEndType::Invalid;
+      std::vector<uint64_t> successors_;
+      std::vector<uint64_t> predecessors_;
+  };
+
+  // ==================== cfg.h ====================
+  #pragma once
+  #include "basic_block.h"
+  #include <optional>
+
+  struct CFGEdge {
+      uint64_t from;
+      uint64_t to;
+      EdgeType type;
+  };
+
+  class CFG {
+  public:
+      uint64_t entryAddress() const { return entry_; }
+
+      BasicBlock* blockAt(uint64_t addr) {
+          auto it = blocks_.find(addr);
+          return it != blocks_.end() ? it->second.get() : nullptr;
+      }
+
+      const BasicBlock* blockAt(uint64_t addr) const {
+          auto it = blocks_.find(addr);
+          return it != blocks_.end() ? it->second.get() : nullptr;
+      }
+
+      // 查找包含某地址的块
+      BasicBlock* blockContaining(uint64_t addr) {
+          for (auto& [start, block] : blocks_) {
+              if (addr >= block->startAddress() && addr < block->endAddress())
+                  return block.get();
+          }
+          return nullptr;
+      }
+
+      const std::vector<CFGEdge>& edges() const { return edges_; }
+
+      // 遍历所有块
+      template<typename Fn>
+      void forEachBlock(Fn&& fn) const {
+          for (const auto& [addr, block] : blocks_) {
+              fn(*block);
+          }
+      }
+
+      size_t blockCount() const { return blocks_.size(); }
+      size_t edgeCount() const { return edges_.size(); }
+
+  private:
+      friend class CFGBuilder;
+
+      uint64_t entry_ = 0;
+      std::unordered_map<uint64_t, std::unique_ptr<BasicBlock>> blocks_;
+      std::vector<CFGEdge> edges_;
+  };
+
+  // ==================== cfg_builder.h ====================
+  #pragma once
+  #include "cfg.h"
+  #include "disassembler.h"
+  #include <functional>
+
+  class CFGBuilder {
+  public:
+      using ReadMemoryFn = std::function<std::vector<uint8_t>(uint64_t addr, size_t size)>;
+
+      CFGBuilder(Disassembler& disasm, ReadMemoryFn read_mem, size_t max_insn_size = 15)
+          : disasm_(disasm)
+          , read_mem_(std::move(read_mem))
+          , max_insn_size_(max_insn_size)
+      {}
+
+      std::unique_ptr<CFG> build(uint64_t entry);
+
+  private:
+      // 指令分类
+      static bool isConditionalJump(const Instruction& insn);
+      static bool isUnconditionalJump(const Instruction& insn);
+      static bool isIndirectJump(const Instruction& insn);
+      static bool isCall(const Instruction& insn);
+      static bool isReturn(const Instruction& insn);
+      static std::optional<uint64_t> getJumpTarget(const Instruction& insn);
+
+      // 反汇编单条指令
+      std::optional<Instruction> disassembleOne(uint64_t addr);
+
+      // Pass 1: 收集所有 leader
+      void collectLeaders(uint64_t entry);
+
+      // Pass 2: 构建基本块
+      void buildBlocks();
+
+      // Pass 3: 连接边
+      void connectEdges();
+
+  private:
+      Disassembler& disasm_;
+      ReadMemoryFn read_mem_;
+      size_t max_insn_size_;
+
+      std::set<uint64_t> leaders_;
+      std::unordered_set<uint64_t> visited_;
+      std::unique_ptr<CFG> cfg_;
+  };
+
+  // ==================== cfg_builder.cpp ====================
+  #include "cfg_builder.h"
+  #include <algorithm>
+
+  std::unique_ptr<CFG> CFGBuilder::build(uint64_t entry) {
+      cfg_ = std::make_unique<CFG>();
+      cfg_->entry_ = entry;
+
+      leaders_.clear();
+      visited_.clear();
+
+      // 三遍扫描
+      collectLeaders(entry);
+      buildBlocks();
+      connectEdges();
+
+      return std::move(cfg_);
+  }
+
+  void CFGBuilder::collectLeaders(uint64_t entry) {
+      std::queue<uint64_t> worklist;
+
+      leaders_.insert(entry);
+      worklist.push(entry);
+
+      while (!worklist.empty()) {
+          uint64_t addr = worklist.front();
+          worklist.pop();
+
+          if (visited_.count(addr))
+              continue;
+          visited_.insert(addr);
+
+          // 线性扫描直到遇到控制流转移
+          while (true) {
+              // 检查是否踩到其他 leader（被截断）
+              if (addr != entry && leaders_.count(addr)) {
+                  break;
+              }
+
+              auto insn = disassembleOne(addr);
+              if (!insn) break;
+
+              if (isConditionalJump(*insn)) {
+                  auto target = getJumpTarget(*insn);
+                  uint64_t fallthrough = insn->nextAddress();
+
+                  if (target && leaders_.insert(*target).second) {
+                      worklist.push(*target);
+                  }
+                  if (leaders_.insert(fallthrough).second) {
+                      worklist.push(fallthrough);
+                  }
+                  break;
+              }
+
+              if (isUnconditionalJump(*insn)) {
+                  auto target = getJumpTarget(*insn);
+                  if (target && leaders_.insert(*target).second) {
+                      worklist.push(*target);
+                  }
+                  break;
+              }
+
+              if (isReturn(*insn) || isIndirectJump(*insn)) {
+                  break;
+              }
+
+              // call 不分割块，但标记下一条为潜在 leader（可选）
+              // if (isCall(*insn)) {
+              //     leaders_.insert(insn->nextAddress());
+              // }
+
+              addr = insn->nextAddress();
+          }
+      }
+  }
+
+  void CFGBuilder::buildBlocks() {
+      for (uint64_t leader : leaders_) {
+          auto block = std::make_unique<BasicBlock>();
+          block->start_ = leader;
+
+          uint64_t addr = leader;
+
+          while (true) {
+              auto insn = disassembleOne(addr);
+              if (!insn) {
+                  block->end_type_ = BlockEndType::Invalid;
+                  break;
+              }
+
+              block->instructions_.push_back(*insn);
+              uint64_t next = insn->nextAddress();
+
+              // 判断块结束条件
+              if (isConditionalJump(*insn)) {
+                  block->end_type_ = BlockEndType::ConditionalJump;
+
+                  // 添加后继
+                  if (auto target = getJumpTarget(*insn)) {
+                      block->successors_.push_back(*target);
+                  }
+                  block->successors_.push_back(next);  // fallthrough
+                  break;
+              }
+
+              if (isUnconditionalJump(*insn)) {
+                  if (isIndirectJump(*insn)) {
+                      block->end_type_ = BlockEndType::IndirectJump;
+                  } else {
+                      block->end_type_ = BlockEndType::UnconditionalJump;
+                      if (auto target = getJumpTarget(*insn)) {
+                          block->successors_.push_back(*target);
+                      }
+                  }
+                  break;
+              }
+
+              if (isReturn(*insn)) {
+                  block->end_type_ = BlockEndType::Return;
+                  break;
+              }
+
+              // 被下一个 leader 截断
+              if (leaders_.count(next)) {
+                  block->end_type_ = BlockEndType::FallThrough;
+                  block->successors_.push_back(next);
+                  break;
+              }
+
+              addr = next;
+          }
+
+          block->end_ = block->instructions_.empty()
+              ? leader
+              : block->instructions_.back().nextAddress();
+
+          cfg_->blocks_[leader] = std::move(block);
+      }
+  }
+
+  void CFGBuilder::connectEdges() {
+      for (auto& [addr, block] : cfg_->blocks_) {
+          for (uint64_t succ_addr : block->successors_) {
+              auto* succ = cfg_->blockAt(succ_addr);
+              if (succ) {
+                  succ->addPredecessor(addr);
+              }
+
+              // 确定边类型
+              EdgeType edge_type;
+              switch (block->end_type_) {
+                  case BlockEndType::ConditionalJump:
+                      if (succ_addr == block->instructions_.back().nextAddress()) {
+                          edge_type = EdgeType::ConditionalFalse;
+                      } else {
+                          edge_type = EdgeType::ConditionalTrue;
+                      }
+                      break;
+                  case BlockEndType::UnconditionalJump:
+                      edge_type = EdgeType::Unconditional;
+                      break;
+                  case BlockEndType::FallThrough:
+                      edge_type = EdgeType::FallThrough;
+                      break;
+                  default:
+                      edge_type = EdgeType::FallThrough;
+              }
+
+              cfg_->edges_.push_back({addr, succ_addr, edge_type});
+          }
+      }
+  }
+
+  // ==================== 指令分类实现 ====================
+
+  bool CFGBuilder::isConditionalJump(const Instruction& insn) {
+      const auto& m = insn.mnemonic;
+      if (m.empty() || m[0] != 'j') return false;
+      if (m == "jmp") return false;
+
+      // je, jne, jl, jle, jg, jge, jb, jbe, ja, jae, js, jns, jo, jno, jp, jnp
+      // jcxz, jecxz, jrcxz, loop, loope, loopne
+      return true;
+  }
+
+  bool CFGBuilder::isUnconditionalJump(const Instruction& insn) {
+      return insn.mnemonic == "jmp";
+  }
+
+  bool CFGBuilder::isIndirectJump(const Instruction& insn) {
+      if (insn.mnemonic != "jmp") return false;
+      // 检查操作数是否是寄存器或内存
+      const auto& op = insn.operands;
+      return !op.empty() && (op.find("0x") == std::string::npos || op.find('[') != std::string::npos);
+  }
+
+  bool CFGBuilder::isCall(const Instruction& insn) {
+      return insn.mnemonic == "call";
+  }
+
+  bool CFGBuilder::isReturn(const Instruction& insn) {
+      return insn.mnemonic == "ret" || insn.mnemonic == "retn" || insn.mnemonic == "retf";
+  }
+
+  std::optional<uint64_t> CFGBuilder::getJumpTarget(const Instruction& insn) {
+      // 简单解析：假设操作数是 "0x1234" 形式
+      const auto& op = insn.operands;
+      if (op.empty()) return std::nullopt;
+
+      try {
+          return std::stoull(op, nullptr, 0);
+      } catch (...) {
+          return std::nullopt;  // 间接跳转，无法静态解析
+      }
+  }
+
+  std::optional<Instruction> CFGBuilder::disassembleOne(uint64_t addr) {
+      auto code = read_mem_(addr, max_insn_size_);
+      if (code.empty()) return std::nullopt;
+
+      auto result = disasm_.disassemble(code, addr);
+      if (result.instructions.empty()) return std::nullopt;
+
+      return result.instructions[0];
+  }
+
+  // ==================== 使用示例 ====================
+  #include "cfg_builder.h"
+  #include "arch_x86.h"
+
+  int main() {
+      // 设置
+      ArchX86_64 arch;
+      auto disasm = arch.createDisassembler();
+
+      // 模拟二进制数据
+      std::vector<uint8_t> binary = { /* ... */ };
+      uint64_t base_addr = 0x401000;
+
+      auto read_mem = [&](uint64_t addr, size_t size) -> std::vector<uint8_t> {
+          uint64_t offset = addr - base_addr;
+          if (offset >= binary.size()) return {};
+          size_t actual = std::min(size, binary.size() - offset);
+          return {binary.begin() + offset, binary.begin() + offset + actual};
+      };
+
+      // 构建 CFG
+      CFGBuilder builder(*disasm, read_mem);
+      auto cfg = builder.build(0x401000);
+
+      // 打印结果
+      printf("CFG: %zu blocks, %zu edges\n", cfg->blockCount(), cfg->edgeCount());
+
+      cfg->forEachBlock([](const BasicBlock& block) {
+          printf("\nBlock 0x%llx - 0x%llx:\n", block.startAddress(), block.endAddress());
+          for (const auto& insn : block.instructions()) {
+              printf("  0x%llx: %s\n", insn.address, insn.text().c_str());
+          }
+          printf("  -> successors:");
+          for (auto succ : block.successors()) {
+              printf(" 0x%llx", succ);
+          }
+          printf("\n");
+      });
+  }
+
+  ---
+  输出示例
+
+  CFG: 4 blocks, 5 edges
+
+  Block 0x401000 - 0x401010:
+    0x401000: push rbp
+    0x401001: mov rbp, rsp
+    0x401004: cmp edi, 0
+    0x401007: je 0x401020
+    -> successors: 0x401020 0x401009
+
+  Block 0x401009 - 0x401015:
+    0x401009: mov eax, 1
+    0x40100e: jmp 0x401025
+    -> successors: 0x401025
+
+  Block 0x401020 - 0x401025:
+    0x401020: xor eax, eax
+    -> successors: 0x401025
+
+  Block 0x401025 - 0x40102a:
+    0x401025: pop rbp
+    0x401026: ret
+    -> successors:
+
+  ---
+  扩展方向
+
+  | 功能                    | 说明           |
+  |-------------------------|----------------|
+  | 支配树 (Dominator Tree) | 用于优化和分析 |
+  | 循环检测                | 识别 back edge |
+  | 间接跳转解析            | 结合数据流分析 |
+  | 导出 Graphviz           | 可视化 CFG     |
+
+  需要实现 Graphviz 导出来可视化吗？
+
+> 构建基本块 worklist 和leaders都是什么意思和作用
+
+● Leaders（领导者）
+
+  定义：基本块的起始地址集合。
+
+  每个 leader 就是一个基本块的第一条指令地址。
+
+  std::set<uint64_t> leaders_;  // 存储所有基本块的起始地址
+
+  什么地址会成为 Leader
+
+  0x1000: push rbp        ← Leader（函数入口）
+  0x1001: mov rbp, rsp
+  0x1004: cmp eax, 0
+  0x1007: je 0x1020       → 产生两个新 Leader
+                  │
+          ┌───────┴───────┐
+          ▼               ▼
+  0x1009: mov eax, 1  ← Leader（fallthrough）
+  0x100E: jmp 0x1025
+          │
+          │           0x1020: xor eax, eax  ← Leader（跳转目标）
+          │           0x1023: nop
+          │               │
+          ▼               ▼
+  0x1025: pop rbp     ← Leader（跳转目标）
+  0x1026: ret
+
+  Leaders = {0x1000, 0x1009, 0x1020, 0x1025}
+
+  ---
+  Worklist（工作队列）
+
+  定义：待处理的地址队列，用于 BFS 遍历控制流。
+
+  std::queue<uint64_t> worklist;  // 待分析的起始地址
+
+  工作流程
+
+  初始状态:
+    leaders = {0x1000}
+    worklist = [0x1000]
+
+  第1轮: 处理 0x1000
+    扫描到 je 0x1020
+    发现新 leader: 0x1009 (fallthrough), 0x1020 (target)
+    leaders = {0x1000, 0x1009, 0x1020}
+    worklist = [0x1009, 0x1020]
+
+  第2轮: 处理 0x1009
+    扫描到 jmp 0x1025
+    发现新 leader: 0x1025
+    leaders = {0x1000, 0x1009, 0x1020, 0x1025}
+    worklist = [0x1020, 0x1025]
+
+  第3轮: 处理 0x1020
+    扫描到 fallthrough 到 0x1025
+    0x1025 已在 leaders，不重复添加
+    worklist = [0x1025]
+
+  第4轮: 处理 0x1025
+    扫描到 ret，无后继
+    worklist = []
+
+  结束！
+
+  ---
+  形象比喻
+
+  | 概念     | 比喻                 |
+  |----------|----------------------|
+  | Leaders  | 地图上标记的所有路口 |
+  | Worklist | 待探索的路口队列     |
+  | Visited  | 已走过的路口         |
+
+  探险过程:
+  1. 从入口（0x1000）出发
+  2. 走到岔路口（je），标记两个新路口
+  3. 把新路口加入待探索队列
+  4. 从队列取下一个，继续探索
+  5. 直到队列为空
+
+  ---
+  为什么需要 Worklist
+
+  因为控制流不是线性的：
+
+  不用 worklist（错误）:
+    线性扫描 0x1000 → 0x1001 → ... → 0x1007 (je 0x1020)
+    然后呢？去 0x1009 还是 0x1020？漏掉一个分支！
+
+  用 worklist（正确）:
+    遇到分支 → 两个目标都入队 → 保证都能遍历到
+
+  ---
+  简化伪代码
+
+  void collectLeaders(uint64_t entry) {
+      leaders.insert(entry);      // 入口是第一个 leader
+      worklist.push(entry);       // 从入口开始探索
+
+      while (!worklist.empty()) {
+          addr = worklist.pop();
+          if (visited[addr]) continue;
+          visited[addr] = true;
+
+          // 线性扫描
+          while (true) {
+              insn = disasm(addr);
+
+              if (insn 是条件跳转) {
+                  // 发现两个新 leader
+                  addLeader(跳转目标);
+                  addLeader(下一条指令);
+                  break;
+              }
+              if (insn 是无条件跳转) {
+                  addLeader(跳转目标);
+                  break;
+              }
+              if (insn 是 ret) {
+                  break;  // 无后继
+              }
+
+              addr = 下一条指令;
+          }
+      }
+  }
+
+  void addLeader(uint64_t addr) {
+      if (leaders.insert(addr).second) {  // 新发现的
+          worklist.push(addr);             // 加入待探索
+      }
+  }
+
+  ---
+  总结
+
+  | 概念     | 作用                       |
+  |----------|----------------------------|
+  | Leaders  | 记录所有基本块的起始地址   |
+  | Worklist | BFS 队列，确保遍历所有分支 |
+  | Visited  | 防止重复处理同一地址       |
+
+  三者配合实现完整的控制流发现。
+
+> c++ 有没有简单绘制，可以把基本块和CFG都绘制出来，最好越轻量越好，只是用于测试验证
+
+● 最简单的方案：导出 Graphviz DOT 格式，零依赖。
+
+  方案1：导出 DOT（推荐）
+
+  // ==================== cfg_export.h ====================
+  #pragma once
+  #include "cfg.h"
+  #include <sstream>
+  #include <iomanip>
+
+  class CFGExporter {
+  public:
+      static std::string toDot(const CFG& cfg) {
+          std::ostringstream ss;
+
+          ss << "digraph CFG {\n";
+          ss << "  node [shape=box, fontname=\"Courier\", fontsize=10];\n";
+          ss << "  edge [fontsize=8];\n\n";
+
+          // 绘制节点
+          cfg.forEachBlock([&](const BasicBlock& block) {
+              ss << "  \"" << hex(block.startAddress()) << "\" [label=\"";
+
+              // 块内指令
+              for (const auto& insn : block.instructions()) {
+                  ss << hex(insn.address) << ": " << escape(insn.text()) << "\\l";
+              }
+
+              ss << "\"];\n";
+          });
+
+          ss << "\n";
+
+          // 绘制边
+          for (const auto& edge : cfg.edges()) {
+              ss << "  \"" << hex(edge.from) << "\" -> \"" << hex(edge.to) << "\"";
+
+              // 边标签和颜色
+              switch (edge.type) {
+                  case EdgeType::ConditionalTrue:
+                      ss << " [color=green, label=\"T\"]";
+                      break;
+                  case EdgeType::ConditionalFalse:
+                      ss << " [color=red, label=\"F\"]";
+                      break;
+                  case EdgeType::Unconditional:
+                      ss << " [color=blue]";
+                      break;
+                  default:
+                      break;
+              }
+              ss << ";\n";
+          }
+
+          ss << "}\n";
+          return ss.str();
+      }
+
+      // 保存到文件
+      static void saveDot(const CFG& cfg, const std::string& path) {
+          std::ofstream f(path);
+          f << toDot(cfg);
+      }
+
+  private:
+      static std::string hex(uint64_t addr) {
+          std::ostringstream ss;
+          ss << "0x" << std::hex << addr;
+          return ss.str();
+      }
+
+      static std::string escape(const std::string& s) {
+          std::string out;
+          for (char c : s) {
+              if (c == '"') out += "\\\"";
+              else if (c == '\\') out += "\\\\";
+              else out += c;
+          }
+          return out;
+      }
+  };
+
+  使用
+
+  // 导出
+  CFGExporter::saveDot(*cfg, "output.dot");
+
+  // 命令行渲染
+  // dot -Tpng output.dot -o output.png
+  // dot -Tsvg output.dot -o output.svg
+
+  在线预览（无需安装）
+
+  把 DOT 内容粘贴到：https://dreampuf.github.io/GraphvizOnline
+
+  ---
+  方案2：ASCII 打印（更轻量）
+
+  class CFGPrinter {
+  public:
+      static void print(const CFG& cfg) {
+          printf("=== CFG: %zu blocks, %zu edges ===\n\n",
+                 cfg.blockCount(), cfg.edgeCount());
+
+          cfg.forEachBlock([](const BasicBlock& block) {
+              // 块头
+              printf("+----[ 0x%llx ]", block.startAddress());
+              for (auto pred : block.predecessors()) {
+                  printf(" <-0x%llx", pred);
+              }
+              printf("\n");
+
+              // 指令
+              for (const auto& insn : block.instructions()) {
+                  printf("| 0x%llx: %s\n", insn.address, insn.text().c_str());
+              }
+
+              // 后继
+              printf("+----> ");
+              if (block.successors().empty()) {
+                  printf("(exit)\n");
+              } else {
+                  for (auto succ : block.successors()) {
+                      printf("0x%llx ", succ);
+                  }
+                  printf("\n");
+              }
+              printf("\n");
+          });
+      }
+  };
+
+  输出效果
+
+  === CFG: 4 blocks, 5 edges ===
+
+  +----[ 0x401000 ]
+  | 0x401000: push rbp
+  | 0x401001: mov rbp, rsp
+  | 0x401004: cmp edi, 0
+  | 0x401007: je 0x401020
+  +----> 0x401020 0x401009
+
+  +----[ 0x401009 ] <-0x401000
+  | 0x401009: mov eax, 1
+  | 0x40100e: jmp 0x401025
+  +----> 0x401025
+
+  +----[ 0x401020 ] <-0x401000
+  | 0x401020: xor eax, eax
+  +----> 0x401025
+
+  +----[ 0x401025 ] <-0x401009 <-0x401020
+  | 0x401025: pop rbp
+  | 0x401026: ret
+  +----> (exit)
+
+  ---
+  方案3：HTML 导出（可交互）
+
+  static void saveHtml(const CFG& cfg, const std::string& path) {
+      std::ofstream f(path);
+
+      f << R"(<!DOCTYPE html>
+  <html>
+  <head>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="https://unpkg.com/@hpcc-js/wasm/dist/index.min.js"></script>
+    <script src="https://unpkg.com/d3-graphviz@4/build/d3-graphviz.min.js"></script>
+  </head>
+  <body>
+    <div id="graph"></div>
+    <script>
+      d3.select("#graph").graphviz().renderDot(`)"
+        << toDot(cfg)
+        << R"(`);
+    </script>
+  </body>
+  </html>)";
+  }
+
+  双击打开 HTML 即可在浏览器看到 CFG。
+
+  ---
+  总结
+
+  | 方案           | 依赖              | 适用场景  |
+  |----------------|-------------------|-----------|
+  | DOT + Graphviz | 命令行装 graphviz | 正式输出  |
+  | DOT + 在线工具 | 无                | 快速验证  |
+  | ASCII          | 无                | 调试打印  |
+  | HTML           | 无                | 分享/演示 |
+
+  推荐：开发阶段用 ASCII 打印 + DOT 在线预览，够用且零依赖。
