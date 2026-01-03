@@ -17,5 +17,5 @@ protected:
 
 private:
   BinaryModule& bin_;
-  std::stack<uint32_t> entrances_;
+  std::stack<uint32_t> workList_;
 };
