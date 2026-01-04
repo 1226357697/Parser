@@ -8,43 +8,44 @@ Parser::Parser(BinaryModule& bin)
 bool Parser::parseFunctions()
 {
   // collect entrances
-  collectEntrance();
-  if(workList_.empty())
-    return true;
+  std::set<uint32_t> leaders = searchLeaders();
+  std::stack<uint32_t> workLists(std::deque<uint32_t>(leaders.begin(), leaders.end()));
+  auto instAnalyzer = bin_.instructionAnalyzer();
 
-  while (!workList_.empty())
+  while (!workLists.empty())
   {
-    RVA_t rva = workList_.top();
-    workList_.pop();
-    parseFunction(rva);
+    RVA_t rva = workLists.top();
+    workLists.pop();
+
+    RVA_t currentRva = rva;
+    while (auto inst = bin_.disassembleOne(currentRva))
+    {
+      if (instAnalyzer->isConditionalJump(*inst))
+      {
+
+      }
+      currentRva += inst->size();
+    }
   }
 
   return true;
 }
 
-bool Parser::parseFunction(RVA_t rva)
-{
-  RVA_t currentRva = rva;
-  while (auto inst = bin_.disassembleOne(currentRva))
-  {
-    
-    currentRva += inst->size();
-  }
 
-  return true;
-}
 
-void Parser::collectEntrance()
+std::set<uint32_t> Parser::searchLeaders()
 {
-  std::vector<uint32_t> entrances;
+  std::set<uint32_t> leaders;
 
   if (bin_.entryPoint() != 0)
   {
-    workList_.push(bin_.entryPoint());
+    leaders.insert(bin_.entryPoint());
   }
 
   for (auto& item : bin_.exportFunctions())
   {
-    workList_.push(item.rva);
+    leaders.insert(item.rva);
   }
+
+  return leaders;
 }

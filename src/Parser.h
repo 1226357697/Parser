@@ -13,7 +13,7 @@ public:
 
 protected:
   bool parseFunction(RVA_t rva);
-  void collectEntrance();
+  std::set<uint32_t> searchLeaders();
 
 private:
   BinaryModule& bin_;

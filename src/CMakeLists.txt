@@ -22,6 +22,10 @@ set(
     CapstoneDisassembler.cpp
     X86Architecture.h
     X86Architecture.cpp
+    InstructionAnalyzer.h
+    InstructionAnalyzer.cpp
+    X86InstructionAnalyzer.h
+    X86InstructionAnalyzer.cpp
     CrossReference.h
     CrossReference.cpp
     main.cpp

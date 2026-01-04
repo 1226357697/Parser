@@ -2113,3 +2113,963 @@ std::string& path)
   | HTML           | 无                | 分享/演示 |
 
   推荐：开发阶段用 ASCII 打印 + DOT 在线预览，够用且零依赖。
+
+
+
+> 如何更好的去分析汇编中 switch语意，分析出所有的case和default
+
+● Switch 编译后有多种形式，需要分别识别：
+
+  编译器生成的三种模式
+
+  1. 跳转表（Jump Table）— 最常见
+
+  // 源码
+  switch (x) {
+      case 0: foo(); break;
+      case 1: bar(); break;
+      case 2: baz(); break;
+      default: def(); break;
+  }
+
+  ; 编译后 (x86-64)
+      cmp  edi, 2           ; 检查上界
+      ja   default_label    ; x > 2 跳 default
+
+      lea  rax, [rip + jump_table]
+      movsxd rcx, dword ptr [rax + rdi*4]  ; 读取跳转表
+      add  rcx, rax
+      jmp  rcx              ; 间接跳转
+
+  jump_table:
+      .long case_0 - jump_table
+      .long case_1 - jump_table
+      .long case_2 - jump_table
+
+  2. if-else 链
+
+      cmp  edi, 0
+      je   case_0
+      cmp  edi, 1
+      je   case_1
+      cmp  edi, 100         ; 值分散
+      je   case_100
+      jmp  default_label
+
+  3. 二分查找（case 较多且分散）
+
+      cmp  edi, 50
+      jl   check_lower
+      jg   check_higher
+      ; case 50 处理
+
+  ---
+  跳转表分析算法
+
+  struct SwitchInfo {
+      uint64_t switch_addr;        // switch 指令地址
+      uint64_t table_addr;         // 跳转表地址
+      uint64_t default_addr;       // default 地址
+      int64_t min_case;            // 最小 case 值
+      int64_t max_case;            // 最大 case 值
+      std::vector<std::pair<int64_t, uint64_t>> cases;  // {case值, 目标地址}
+  };
+
+  class SwitchAnalyzer {
+  public:
+      std::optional<SwitchInfo> analyze(const BasicBlock& block,
+                                         const CFG& cfg,
+                                         ReadMemoryFn read_mem) {
+          auto& insns = block.instructions();
+          if (insns.size() < 3) return std::nullopt;
+
+          // 模式匹配：寻找跳转表特征
+          // 1. cmp reg, imm      (边界检查)
+          // 2. ja/jb default     (跳 default)
+          // 3. ... 计算 ...
+          // 4. jmp reg/[mem]     (间接跳转)
+
+          const Instruction* bound_check = nullptr;
+          const Instruction* default_jump = nullptr;
+          const Instruction* indirect_jmp = nullptr;
+          uint64_t table_base = 0;
+
+          for (size_t i = 0; i < insns.size(); i++) {
+              const auto& insn = insns[i];
+
+              // 找边界检查: cmp edi, N
+              if (insn.mnemonic == "cmp" && !bound_check) {
+                  bound_check = &insn;
+                  continue;
+              }
+
+              // 找 default 跳转: ja default
+              if ((insn.mnemonic == "ja" || insn.mnemonic == "jb") && bound_check) {
+                  default_jump = &insn;
+                  continue;
+              }
+
+              // 找 lea (跳转表基址): lea rax, [rip + xxx]
+              if (insn.mnemonic == "lea") {
+                  table_base = parseLeaTarget(insn);
+                  continue;
+              }
+
+              // 找间接跳转: jmp rax / jmp [rax + rcx*4]
+              if (insn.mnemonic == "jmp" && isIndirectJump(insn)) {
+                  indirect_jmp = &insn;
+                  break;
+              }
+          }
+
+          if (!bound_check || !indirect_jmp || !table_base) {
+              return std::nullopt;
+          }
+
+          // 解析跳转表
+          return parseJumpTable(bound_check, default_jump, table_base, read_mem);
+      }
+
+  private:
+      SwitchInfo parseJumpTable(const Instruction* bound_check,
+                                 const Instruction* default_jump,
+                                 uint64_t table_base,
+                                 ReadMemoryFn read_mem) {
+          SwitchInfo info;
+          info.table_addr = table_base;
+
+          // 从 cmp 指令解析上界: cmp edi, 5 → max_case = 5
+          info.max_case = parseCmpImmediate(*bound_check);
+          info.min_case = 0;  // 通常从 0 开始
+
+          // 解析 default 地址
+          if (default_jump) {
+              info.default_addr = parseJumpTarget(*default_jump);
+          }
+
+          // 读取跳转表条目
+          size_t entry_count = info.max_case - info.min_case + 1;
+
+          for (size_t i = 0; i < entry_count; i++) {
+              // 读取 4 字节相对偏移（常见格式）
+              auto data = read_mem(table_base + i * 4, 4);
+              if (data.size() < 4) break;
+
+              int32_t offset = *reinterpret_cast<int32_t*>(data.data());
+              uint64_t target = table_base + offset;
+
+              info.cases.push_back({info.min_case + i, target});
+          }
+
+          return info;
+      }
+  };
+
+  ---
+  完整的 Switch 检测器
+
+  class SwitchDetector {
+  public:
+      struct SwitchCase {
+          std::vector<int64_t> values;  // 可能多个值跳同一地址
+          uint64_t target_addr;
+      };
+
+      struct SwitchStatement {
+          uint64_t address;
+          std::string switch_var;       // 推测的变量名/寄存器
+          std::vector<SwitchCase> cases;
+          uint64_t default_addr;
+      };
+
+      std::optional<SwitchStatement> detect(const BasicBlock& block,
+                                             ReadMemoryFn read_mem) {
+          // 检测模式1：跳转表
+          if (auto result = detectJumpTable(block, read_mem)) {
+              return result;
+          }
+
+          // 检测模式2：if-else 链
+          if (auto result = detectIfElseChain(block)) {
+              return result;
+          }
+
+          return std::nullopt;
+      }
+
+  private:
+      std::optional<SwitchStatement> detectJumpTable(const BasicBlock& block,
+                                                      ReadMemoryFn read_mem) {
+          // 特征：
+          // 1. 块以间接跳转结尾
+          // 2. 有边界检查 (cmp + ja/jb)
+          // 3. 有 lea 加载表地址
+
+          auto& insns = block.instructions();
+          if (insns.empty()) return std::nullopt;
+
+          auto& last = insns.back();
+          if (!isIndirectJump(last)) return std::nullopt;
+
+          // 向前搜索特征指令
+          std::optional<uint64_t> table_addr;
+          std::optional<int64_t> max_value;
+          std::optional<uint64_t> default_addr;
+          std::string switch_reg;
+
+          for (auto it = insns.rbegin(); it != insns.rend(); ++it) {
+              // lea rax, [rip + offset]
+              if (it->mnemonic == "lea" && it->operands.find("rip") != std::string::npos) {
+                  table_addr = computeRipRelative(*it);
+              }
+
+              // cmp edi, N
+              if (it->mnemonic == "cmp") {
+                  auto [reg, imm] = parseCmpOperands(*it);
+                  switch_reg = reg;
+                  max_value = imm;
+              }
+
+              // ja/jae default_label
+              if (it->mnemonic == "ja" || it->mnemonic == "jae") {
+                  default_addr = parseJumpTarget(*it);
+              }
+          }
+
+          if (!table_addr || !max_value) return std::nullopt;
+
+          // 读取跳转表
+          SwitchStatement stmt;
+          stmt.address = block.startAddress();
+          stmt.switch_var = switch_reg;
+          stmt.default_addr = default_addr.value_or(0);
+
+          std::unordered_map<uint64_t, std::vector<int64_t>> target_to_values;
+
+          for (int64_t i = 0; i <= *max_value; i++) {
+              auto entry = read_mem(*table_addr + i * 4, 4);
+              if (entry.size() < 4) break;
+
+              int32_t offset = *reinterpret_cast<int32_t*>(entry.data());
+              uint64_t target = *table_addr + offset;
+
+              target_to_values[target].push_back(i);
+          }
+
+          // 合并相同目标的 case
+          for (auto& [target, values] : target_to_values) {
+              stmt.cases.push_back({values, target});
+          }
+
+          return stmt;
+      }
+
+      std::optional<SwitchStatement> detectIfElseChain(const BasicBlock& block) {
+          // 特征：连续的 cmp + je/jne 模式
+          auto& insns = block.instructions();
+
+          SwitchStatement stmt;
+          stmt.address = block.startAddress();
+
+          std::string switch_reg;
+
+          for (size_t i = 0; i + 1 < insns.size(); i++) {
+              auto& cmp = insns[i];
+              auto& jcc = insns[i + 1];
+
+              // cmp reg, imm
+              // je target
+              if (cmp.mnemonic == "cmp" && jcc.mnemonic == "je") {
+                  auto [reg, imm] = parseCmpOperands(cmp);
+
+                  if (switch_reg.empty()) {
+                      switch_reg = reg;
+                  } else if (switch_reg != reg) {
+                      // 不同寄存器，可能不是 switch
+                      break;
+                  }
+
+                  uint64_t target = parseJumpTarget(jcc);
+                  stmt.cases.push_back({{imm}, target});
+                  i++;  // 跳过 jcc
+              }
+          }
+
+          if (stmt.cases.size() >= 2) {
+              stmt.switch_var = switch_reg;
+              // default 是最后的无条件跳转或 fallthrough
+              return stmt;
+          }
+
+          return std::nullopt;
+      }
+  };
+
+  ---
+  使用示例
+
+  SwitchDetector detector;
+  auto result = detector.detect(block, read_mem);
+
+  if (result) {
+      printf("Switch at 0x%llx on %s:\n",
+             result->address, result->switch_var.c_str());
+
+      for (auto& c : result->cases) {
+          printf("  case ");
+          for (size_t i = 0; i < c.values.size(); i++) {
+              if (i > 0) printf(", ");
+              printf("%lld", c.values[i]);
+          }
+          printf(": goto 0x%llx\n", c.target_addr);
+      }
+
+      if (result->default_addr) {
+          printf("  default: goto 0x%llx\n", result->default_addr);
+      }
+  }
+
+  输出：
+  Switch at 0x401000 on edi:
+    case 0: goto 0x401050
+    case 1, 2: goto 0x401060    // 合并的 case
+    case 3: goto 0x401070
+    default: goto 0x401080
+
+  ---
+  难点和边界情况
+
+  | 情况                        | 处理方式                    |
+  |-----------------------------|-----------------------------|
+  | 稀疏 case（如 0,1,100,200） | 编译器可能用 if-else 或二分 |
+  | 负数 case                   | 检查 sub 指令调整偏移       |
+  | 跳转表格式（绝对/相对地址） | 读取后判断是否合理          |
+  | MSVC vs GCC 差异            | 模式略有不同，需多种特征    |
+  | 混淆/手写汇编               | 启发式分析，无法保证        |
+
+  需要我展开讲某个特定编译器的模式吗？
+
+
+> 我有一个需求，给定一个函数(多个基本块)， 如何trace
+一个值(内存/寄存器)，把整个计算赋值过程提升成表达式，更容易分析switch跳转表的情况
+
+● 这是符号执行/数据流分析的核心问题。目标是把指令序列提升为表达式。
+
+  概念示例
+
+  ; 输入
+  mov  eax, [rbp-8]           ; 加载 switch 变量
+  lea  rcx, [rip+0x1000]      ; 跳转表基址
+  movsxd rdx, [rcx+rax*4]     ; 读取表项
+  add  rdx, rcx               ; 计算目标
+  jmp  rdx
+
+  ; 输出表达式
+  jmp_target = table_base + *(int32_t*)(table_base + switch_var * 4)
+
+  ---
+  实现：符号表达式系统
+
+  // ==================== expr.h ====================
+  #pragma once
+  #include <memory>
+  #include <string>
+  #include <variant>
+  #include <vector>
+
+  // 前向声明
+  struct Expr;
+  using ExprPtr = std::shared_ptr<Expr>;
+
+  // 表达式类型
+  enum class ExprKind {
+      Const,      // 常量: 0x1000
+      Reg,        // 寄存器: rax
+      Mem,        // 内存读取: [addr]
+      Add,        // 加法: a + b
+      Sub,        // 减法: a - b
+      Mul,        // 乘法: a * b
+      Shl,        // 左移: a << b
+      Shr,        // 右移: a >> b
+      And,        // 与: a & b
+      Or,         // 或: a | b
+      Xor,        // 异或: a ^ b
+      SignExt,    // 符号扩展
+      ZeroExt,    // 零扩展
+      Unknown,    // 未知来源
+  };
+
+  struct Expr : std::enable_shared_from_this<Expr> {
+      ExprKind kind;
+      int bit_width = 64;  // 位宽
+
+      // 根据类型存储不同数据
+      uint64_t const_val = 0;           // Const
+      std::string reg_name;             // Reg
+      ExprPtr operand;                  // 一元操作
+      ExprPtr left, right;              // 二元操作
+
+      // 工厂方法
+      static ExprPtr makeConst(uint64_t val, int bits = 64) {
+          auto e = std::make_shared<Expr>();
+          e->kind = ExprKind::Const;
+          e->const_val = val;
+          e->bit_width = bits;
+          return e;
+      }
+
+      static ExprPtr makeReg(const std::string& name, int bits = 64) {
+          auto e = std::make_shared<Expr>();
+          e->kind = ExprKind::Reg;
+          e->reg_name = name;
+          e->bit_width = bits;
+          return e;
+      }
+
+      static ExprPtr makeMem(ExprPtr addr, int bits = 64) {
+          auto e = std::make_shared<Expr>();
+          e->kind = ExprKind::Mem;
+          e->operand = std::move(addr);
+          e->bit_width = bits;
+          return e;
+      }
+
+      static ExprPtr makeBinary(ExprKind op, ExprPtr l, ExprPtr r) {
+          auto e = std::make_shared<Expr>();
+          e->kind = op;
+          e->left = std::move(l);
+          e->right = std::move(r);
+          e->bit_width = e->left->bit_width;
+          return e;
+      }
+
+      static ExprPtr makeUnknown(const std::string& desc = "?") {
+          auto e = std::make_shared<Expr>();
+          e->kind = ExprKind::Unknown;
+          e->reg_name = desc;
+          return e;
+      }
+
+      // 简化打印
+      std::string toString() const;
+
+      // 常量折叠
+      ExprPtr simplify() const;
+
+      // 判断是否为常量
+      bool isConst() const { return kind == ExprKind::Const; }
+
+      // 提取常量值
+      std::optional<uint64_t> getConstValue() const {
+          if (kind == ExprKind::Const) return const_val;
+          return std::nullopt;
+      }
+  };
+
+  // ==================== expr.cpp ====================
+  #include "expr.h"
+  #include <sstream>
+
+  std::string Expr::toString() const {
+      switch (kind) {
+          case ExprKind::Const:
+              return "0x" + std::to_string(const_val);
+
+          case ExprKind::Reg:
+              return reg_name;
+
+          case ExprKind::Mem:
+              return "[" + operand->toString() + "]";
+
+          case ExprKind::Add:
+              return "(" + left->toString() + " + " + right->toString() + ")";
+
+          case ExprKind::Sub:
+              return "(" + left->toString() + " - " + right->toString() + ")";
+
+          case ExprKind::Mul:
+              return "(" + left->toString() + " * " + right->toString() + ")";
+
+          case ExprKind::Shl:
+              return "(" + left->toString() + " << " + right->toString() + ")";
+
+          case ExprKind::And:
+              return "(" + left->toString() + " & " + right->toString() + ")";
+
+          case ExprKind::SignExt:
+              return "sext(" + operand->toString() + ")";
+
+          case ExprKind::Unknown:
+              return reg_name.empty() ? "?" : reg_name;
+
+          default:
+              return "???";
+      }
+  }
+
+  ExprPtr Expr::simplify() const {
+      // 常量折叠
+      if (kind == ExprKind::Add && left->isConst() && right->isConst()) {
+          return makeConst(left->const_val + right->const_val);
+      }
+      if (kind == ExprKind::Mul && left->isConst() && right->isConst()) {
+          return makeConst(left->const_val * right->const_val);
+      }
+
+      // x + 0 = x
+      if (kind == ExprKind::Add) {
+          if (right->isConst() && right->const_val == 0) return left;
+          if (left->isConst() && left->const_val == 0) return right;
+      }
+
+      // x * 1 = x
+      if (kind == ExprKind::Mul) {
+          if (right->isConst() && right->const_val == 1) return left;
+          if (left->isConst() && left->const_val == 1) return right;
+      }
+
+      // x * 0 = 0
+      if (kind == ExprKind::Mul) {
+          if (right->isConst() && right->const_val == 0) return makeConst(0);
+          if (left->isConst() && left->const_val == 0) return makeConst(0);
+      }
+
+      return std::const_pointer_cast<Expr>(shared_from_this());
+  }
+
+  ---
+  符号执行状态
+
+  // ==================== symbolic_state.h ====================
+  #pragma once
+  #include "expr.h"
+  #include <unordered_map>
+
+  class SymbolicState {
+  public:
+      // 获取寄存器值
+      ExprPtr getReg(const std::string& reg) {
+          // 规范化寄存器名
+          std::string full_reg = normalizeReg(reg);
+
+          auto it = regs_.find(full_reg);
+          if (it != regs_.end()) {
+              return it->second;
+          }
+
+          // 未知寄存器，返回符号
+          return Expr::makeReg(full_reg);
+      }
+
+      // 设置寄存器值
+      void setReg(const std::string& reg, ExprPtr val) {
+          std::string full_reg = normalizeReg(reg);
+          regs_[full_reg] = std::move(val);
+
+          // 处理子寄存器（如 eax 影响 rax）
+          propagateSubRegs(full_reg);
+      }
+
+      // 读内存
+      ExprPtr readMem(ExprPtr addr, int bytes) {
+          // 如果地址是常量，可以查符号内存
+          if (auto const_addr = addr->getConstValue()) {
+              auto it = memory_.find(*const_addr);
+              if (it != memory_.end()) {
+                  return it->second;
+              }
+          }
+
+          // 返回内存读取表达式
+          return Expr::makeMem(addr, bytes * 8);
+      }
+
+      // 写内存
+      void writeMem(ExprPtr addr, ExprPtr val) {
+          if (auto const_addr = addr->getConstValue()) {
+              memory_[*const_addr] = val;
+          }
+          // 非常量地址的写入暂时忽略（保守分析）
+      }
+
+      // 打印状态
+      void dump() const {
+          printf("=== Registers ===\n");
+          for (const auto& [reg, val] : regs_) {
+              printf("  %s = %s\n", reg.c_str(), val->toString().c_str());
+          }
+      }
+
+  private:
+      std::string normalizeReg(const std::string& reg) {
+          // eax -> rax, ax -> rax, al -> rax
+          static const std::unordered_map<std::string, std::string> aliases = {
+              {"eax", "rax"}, {"ax", "rax"}, {"al", "rax"},
+              {"ebx", "rbx"}, {"bx", "rbx"}, {"bl", "rbx"},
+              {"ecx", "rcx"}, {"cx", "rcx"}, {"cl", "rcx"},
+              {"edx", "rdx"}, {"dx", "rdx"}, {"dl", "rdx"},
+              {"esi", "rsi"}, {"si", "rsi"},
+              {"edi", "rdi"}, {"di", "rdi"},
+              {"ebp", "rbp"}, {"bp", "rbp"},
+              {"esp", "rsp"}, {"sp", "rsp"},
+              {"r8d", "r8"}, {"r9d", "r9"}, // ...
+          };
+
+          auto it = aliases.find(reg);
+          return it != aliases.end() ? it->second : reg;
+      }
+
+      void propagateSubRegs(const std::string& reg) {
+          // 写 eax 时清零高 32 位
+          // 简化处理，暂不实现
+      }
+
+      std::unordered_map<std::string, ExprPtr> regs_;
+      std::unordered_map<uint64_t, ExprPtr> memory_;
+  };
+
+  ---
+  指令解释器
+
+  // ==================== symbolic_executor.h ====================
+  #pragma once
+  #include "symbolic_state.h"
+  #include "disassembler.h"
+  #include <regex>
+
+  class SymbolicExecutor {
+  public:
+      using ReadMemoryFn = std::function<std::vector<uint8_t>(uint64_t, size_t)>;
+
+      SymbolicExecutor(ReadMemoryFn read_mem) : read_mem_(std::move(read_mem)) {}
+
+      // 执行单条指令
+      void execute(const Instruction& insn, SymbolicState& state) {
+          const auto& m = insn.mnemonic;
+
+          if (m == "mov" || m == "movabs") {
+              handleMov(insn, state);
+          } else if (m == "lea") {
+              handleLea(insn, state);
+          } else if (m == "add") {
+              handleBinary(insn, state, ExprKind::Add);
+          } else if (m == "sub") {
+              handleBinary(insn, state, ExprKind::Sub);
+          } else if (m == "imul" || m == "mul") {
+              handleBinary(insn, state, ExprKind::Mul);
+          } else if (m == "shl" || m == "sal") {
+              handleBinary(insn, state, ExprKind::Shl);
+          } else if (m == "shr") {
+              handleBinary(insn, state, ExprKind::Shr);
+          } else if (m == "and") {
+              handleBinary(insn, state, ExprKind::And);
+          } else if (m == "or") {
+              handleBinary(insn, state, ExprKind::Or);
+          } else if (m == "xor") {
+              handleXor(insn, state);
+          } else if (m == "movsxd" || m == "movsx") {
+              handleMovsx(insn, state);
+          } else if (m == "movzx") {
+              handleMovzx(insn, state);
+          } else if (m == "cdqe") {
+              // 符号扩展 eax -> rax
+              auto eax = state.getReg("rax");
+              state.setReg("rax", eax);  // 简化处理
+          }
+          // 跳过 cmp, test, jcc 等不影响数据流的指令
+      }
+
+      // 执行基本块
+      void executeBlock(const BasicBlock& block, SymbolicState& state) {
+          for (const auto& insn : block.instructions()) {
+              execute(insn, state);
+          }
+      }
+
+      // 追踪某个寄存器/内存位置的值
+      ExprPtr traceValue(const std::vector<BasicBlock*>& path,
+                         const std::string& target_reg) {
+          SymbolicState state;
+
+          for (auto* block : path) {
+              executeBlock(*block, state);
+          }
+
+          return state.getReg(target_reg);
+      }
+
+  private:
+      // 解析操作数
+      struct Operand {
+          bool is_reg = false;
+          bool is_mem = false;
+          bool is_imm = false;
+          std::string reg;
+          int64_t imm = 0;
+
+          // 内存操作数: [base + index*scale + disp]
+          std::string base_reg;
+          std::string index_reg;
+          int scale = 1;
+          int64_t disp = 0;
+      };
+
+      Operand parseOperand(const std::string& op, SymbolicState& state) {
+          Operand result;
+
+          // 立即数: 0x1234 或 1234
+          std::regex imm_regex(R"(^-?(?:0x)?[0-9a-fA-F]+$)");
+          if (std::regex_match(op, imm_regex)) {
+              result.is_imm = true;
+              result.imm = std::stoll(op, nullptr, 0);
+              return result;
+          }
+
+          // 内存: [rax + rbx*4 + 0x10] 或 [rip + 0x1000]
+          std::regex mem_regex(R"(\[([^\]]+)\])");
+          std::smatch match;
+          if (std::regex_search(op, match, mem_regex)) {
+              result.is_mem = true;
+              parseMemoryOperand(match[1].str(), result);
+              return result;
+          }
+
+          // 寄存器
+          result.is_reg = true;
+          result.reg = op;
+          return result;
+      }
+
+      void parseMemoryOperand(const std::string& inner, Operand& op) {
+          // 简单解析: base + index*scale + disp
+          // 例: rax + rcx*4 + 0x10, rip + 0x1000, rbp - 8
+
+          std::regex pattern(R"((\w+)?\s*(?:\+\s*(\w+)\s*\*\s*(\d+))?\s*(?:([+-])\s*(0x[0-9a-fA-F]+|\d+))?)");
+          std::smatch m;
+
+          if (std::regex_match(inner, m, pattern)) {
+              if (m[1].matched) op.base_reg = m[1].str();
+              if (m[2].matched) op.index_reg = m[2].str();
+              if (m[3].matched) op.scale = std::stoi(m[3].str());
+              if (m[5].matched) {
+                  op.disp = std::stoll(m[5].str(), nullptr, 0);
+                  if (m[4].matched && m[4].str() == "-") op.disp = -op.disp;
+              }
+          }
+      }
+
+      ExprPtr operandToExpr(const Operand& op, SymbolicState& state, uint64_t insn_addr = 0) {
+          if (op.is_imm) {
+              return Expr::makeConst(op.imm);
+          }
+
+          if (op.is_reg) {
+              return state.getReg(op.reg);
+          }
+
+          if (op.is_mem) {
+              ExprPtr addr = Expr::makeConst(0);
+
+              // base
+              if (!op.base_reg.empty()) {
+                  if (op.base_reg == "rip") {
+                      // RIP 相对寻址
+                      addr = Expr::makeConst(insn_addr + op.disp);
+                      return state.readMem(addr, 8);
+                  }
+                  addr = state.getReg(op.base_reg);
+              }
+
+              // + index * scale
+              if (!op.index_reg.empty()) {
+                  auto index = state.getReg(op.index_reg);
+                  auto scaled = Expr::makeBinary(ExprKind::Mul, index,
+                                                 Expr::makeConst(op.scale));
+                  addr = Expr::makeBinary(ExprKind::Add, addr, scaled);
+              }
+
+              // + disp
+              if (op.disp != 0) {
+                  addr = Expr::makeBinary(ExprKind::Add, addr,
+                                          Expr::makeConst(op.disp));
+              }
+
+              return state.readMem(addr->simplify(), 8);
+          }
+
+          return Expr::makeUnknown();
+      }
+
+      // 指令处理器
+      void handleMov(const Instruction& insn, SymbolicState& state) {
+          auto [dst_str, src_str] = splitOperands(insn.operands);
+
+          auto dst = parseOperand(dst_str, state);
+          auto src = parseOperand(src_str, state);
+          auto src_val = operandToExpr(src, state, insn.address);
+
+          if (dst.is_reg) {
+              state.setReg(dst.reg, src_val);
+          } else if (dst.is_mem) {
+              auto addr = operandToExpr(dst, state, insn.address);
+              state.writeMem(addr, src_val);
+          }
+      }
+
+      void handleLea(const Instruction& insn, SymbolicState& state) {
+          auto [dst_str, src_str] = splitOperands(insn.operands);
+
+          auto dst = parseOperand(dst_str, state);
+          auto src = parseOperand(src_str, state);  // [base + index*scale + disp]
+
+          // LEA 计算地址但不读取内存
+          ExprPtr addr = Expr::makeConst(0);
+
+          if (!src.base_reg.empty()) {
+              if (src.base_reg == "rip") {
+                  addr = Expr::makeConst(insn.address + insn.size + src.disp);
+              } else {
+                  addr = state.getReg(src.base_reg);
+                  if (src.disp != 0) {
+                      addr = Expr::makeBinary(ExprKind::Add, addr,
+                                              Expr::makeConst(src.disp));
+                  }
+              }
+          }
+
+          if (!src.index_reg.empty()) {
+              auto index = state.getReg(src.index_reg);
+              auto scaled = Expr::makeBinary(ExprKind::Mul, index,
+                                             Expr::makeConst(src.scale));
+              addr = Expr::makeBinary(ExprKind::Add, addr, scaled);
+          }
+
+          state.setReg(dst.reg, addr->simplify());
+      }
+
+      void handleBinary(const Instruction& insn, SymbolicState& state, ExprKind op) {
+          auto [dst_str, src_str] = splitOperands(insn.operands);
+
+          auto dst = parseOperand(dst_str, state);
+          auto src = parseOperand(src_str, state);
+
+          auto dst_val = operandToExpr(dst, state);
+          auto src_val = operandToExpr(src, state, insn.address);
+
+          auto result = Expr::makeBinary(op, dst_val, src_val)->simplify();
+
+          if (dst.is_reg) {
+              state.setReg(dst.reg, result);
+          }
+      }
+
+      void handleXor(const Instruction& insn, SymbolicState& state) {
+          auto [dst_str, src_str] = splitOperands(insn.operands);
+
+          // xor rax, rax => rax = 0
+          if (dst_str == src_str) {
+              auto dst = parseOperand(dst_str, state);
+              state.setReg(dst.reg, Expr::makeConst(0));
+          } else {
+              handleBinary(insn, state, ExprKind::Xor);
+          }
+      }
+
+      void handleMovsx(const Instruction& insn, SymbolicState& state) {
+          auto [dst_str, src_str] = splitOperands(insn.operands);
+
+          auto dst = parseOperand(dst_str, state);
+          auto src = parseOperand(src_str, state);
+          auto src_val = operandToExpr(src, state, insn.address);
+
+          auto result = std::make_shared<Expr>();
+          result->kind = ExprKind::SignExt;
+          result->operand = src_val;
+
+          state.setReg(dst.reg, result);
+      }
+
+      void handleMovzx(const Instruction& insn, SymbolicState& state) {
+          auto [dst_str, src_str] = splitOperands(insn.operands);
+
+          auto dst = parseOperand(dst_str, state);
+          auto src = parseOperand(src_str, state);
+          auto src_val = operandToExpr(src, state, insn.address);
+
+          state.setReg(dst.reg, src_val);  // 简化处理
+      }
+
+      std::pair<std::string, std::string> splitOperands(const std::string& ops) {
+          auto comma = ops.find(',');
+          if (comma == std::string::npos) return {ops, ""};
+
+          std::string dst = ops.substr(0, comma);
+          std::string src = ops.substr(comma + 1);
+
+          // 去除空格
+          auto trim = [](std::string& s) {
+              s.erase(0, s.find_first_not_of(" \t"));
+              s.erase(s.find_last_not_of(" \t") + 1);
+          };
+          trim(dst);
+          trim(src);
+
+          return {dst, src};
+      }
+
+      ReadMemoryFn read_mem_;
+  };
+
+  ---
+  使用示例
+
+  // 分析 switch 跳转表
+  void analyzeSwitch(const CFG& cfg, uint64_t switch_block_addr) {
+      auto* block = cfg.blockAt(switch_block_addr);
+      if (!block) return;
+
+      SymbolicExecutor executor(read_mem);
+      SymbolicState state;
+
+      // 设置初始符号（switch 变量）
+      state.setReg("rdi", Expr::makeReg("switch_var", 32));
+
+      // 执行块
+      executor.executeBlock(*block, state);
+
+      state.dump();
+
+      // 获取跳转目标表达式
+      auto& last_insn = block->instructions().back();
+      if (last_insn.mnemonic == "jmp") {
+          auto target_expr = state.getReg("rax");  // 假设 jmp rax
+          printf("Jump target: %s\n", target_expr->toString().c_str());
+      }
+  }
+
+  输出示例
+
+  === Registers ===
+    rdi = switch_var
+    rcx = 0x404000
+    rax = sext([0x404000 + (switch_var * 4)])
+    rdx = (0x404000 + sext([0x404000 + (switch_var * 4)]))
+
+  Jump target: (0x404000 + sext([0x404000 + (switch_var * 4)]))
+
+  从表达式可以看出：
+  - 跳转表基址：0x404000
+  - 索引：switch_var * 4
+  - 表项格式：32位有符号偏移
+
+  ---
+  扩展方向
+
+  | 功能         | 说明                   |
+  |--------------|------------------------|
+  | 路径敏感分析 | 沿 CFG 路径传播符号    |
+  | 约束求解     | 结合 Z3 判断路径可达性 |
+  | 内存别名分析 | 判断两个地址是否相同   |
+  | 常量传播     | 读取已知内存位置       |
+
+  需要我展开约束求解来解析跳转表吗？

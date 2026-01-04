@@ -10,6 +10,7 @@ public:
   inline Endian endian() const override { return Endian::Little; }
 
   std::unique_ptr<Disassembler> createDisassembler() override;
+  std::unique_ptr<InstructionAnalyzer> createInstructionAnalzer() override;
 
 
   // Inherited via Architecture

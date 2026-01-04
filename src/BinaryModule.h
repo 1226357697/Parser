@@ -8,6 +8,7 @@
 #include "Function.h"
 #include "CrossReference.h"
 #include "Architecture.h"
+#include "InstructionAnalyzer.h"
 
 enum class FunctionType : uint32_t
 {
@@ -38,7 +39,9 @@ public:
   virtual void addBasicBlock(std::shared_ptr<BasicBlock> bb);
  
 
-  virtual std::optional<Instruction> disassembleOne( uint64_t addr, size_t* outBytesConsumed = nullptr);
+  virtual std::optional<Instruction> disassembleOne(uint64_t addr, size_t* outBytesConsumed = nullptr);
+
+  virtual std::unique_ptr<InstructionAnalyzer> instructionAnalyzer();
 
   virtual std::vector<uint8_t> readBytes(RVA_t rva, size_t size);
 

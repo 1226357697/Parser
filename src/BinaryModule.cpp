@@ -71,6 +71,11 @@ std::optional<Instruction> BinaryModule::disassembleOne(uint64_t addr, size_t* o
 
 }
 
+std::unique_ptr<InstructionAnalyzer> BinaryModule::instructionAnalyzer()
+{
+    return arch_->createInstructionAnalzer();
+}
+
 std::vector<uint8_t> BinaryModule::readBytes(RVA_t rva, size_t size)
 {
   uint64_t va = binary_->imagebase() + rva;
