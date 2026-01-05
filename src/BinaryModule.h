@@ -32,6 +32,8 @@ public:
 
   bool load(const std::string& path);
 
+  uint64_t imageBase();
+
   virtual RVA_t entryPoint();
 
   virtual std::vector<FuntionInfo> exportFunctions();

@@ -38,6 +38,11 @@ bool BinaryModule::load(const std::string& path)
   return true;
 }
 
+uint64_t BinaryModule::imageBase()
+{
+    return binary_->imagebase();
+}
+
 RVA_t BinaryModule::entryPoint()
 {
   return binary_->entrypoint() - binary_->imagebase();

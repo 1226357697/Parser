@@ -1,4 +1,6 @@
 #include "Parser.h"
+#include <format>
+#include <iostream>
 
 Parser::Parser(BinaryModule& bin)
 :bin_(bin)
@@ -20,12 +22,47 @@ bool Parser::parseFunctions()
     RVA_t currentRva = rva;
     while (auto inst = bin_.disassembleOne(currentRva))
     {
+      std::cout 
+      << std::format("{:08X} {}\t{}", inst->address + bin_.imageBase(), inst->mnemonic, inst->operands)
+      << std::endl;;
+
       if (instAnalyzer->isConditionalJump(*inst))
       {
+        auto target = instAnalyzer->getJumpTarget(*inst);
+        auto fall = inst->address + inst->size();
+        if (target && leaders.insert(target.value()).second)
+        {
+          workLists.push(target.value());
+        }
 
+        if (leaders.insert(fall).second)
+        {
+          workLists.push(fall);
+        }
+
+        break;
+      }
+
+      if (instAnalyzer->isUnconditionalJump(*inst))
+      {
+        auto target = instAnalyzer->getJumpTarget(*inst);
+
+        if (target && leaders.insert(target.value()).second)
+        {
+          workLists.push(target.value());
+        }
+
+        break;
+      }
+
+      if (instAnalyzer->isReturn(*inst))
+      {
+        break;
       }
       currentRva += inst->size();
     }
+
+    std::cout << "---------------------------------------------------" <<std::endl;
   }
 
   return true;
