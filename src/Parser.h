@@ -12,7 +12,7 @@ public:
   bool parseFunctions();
 
 protected:
-  bool parseFunction(RVA_t rva);
+  void buildBlocks(std::set<uint32_t>& leaders);
   std::set<uint32_t> searchLeaders();
 
 private:

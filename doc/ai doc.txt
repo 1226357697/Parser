@@ -3073,3 +3073,998 @@ std::string& path)
   | 常量传播     | 读取已知内存位置       |
 
   需要我展开约束求解来解析跳转表吗？
+
+  > 一个抽象指令，我先实现一个x86指令相关的函数，我应该去继承抽象指令还是
+在Architecture类里去实现获取指令信息比如是否是返回还是跳转等等
+
+● 推荐方案2：Architecture 提供分析接口，Instruction 保持纯数据。
+
+  两种方案对比
+
+  方案1：继承（不推荐）
+
+  class Instruction {
+  public:
+      virtual bool isReturn() const = 0;
+      virtual bool isJump() const = 0;
+      virtual bool isCall() const = 0;
+      // ...
+  };
+
+  class X86Instruction : public Instruction {
+  public:
+      bool isReturn() const override {
+          return mnemonic == "ret" || mnemonic == "retf";
+      }
+      // ...
+  };
+
+  问题：
+  - 指令是高频创建的值类型，虚函数有开销
+  - 需要工厂方法创建正确类型
+  - Capstone 返回的是原始数据，还得转换
+
+  ---
+  方案2：Architecture 提供分析器（推荐）
+
+  // Instruction 保持纯数据
+  struct Instruction {
+      uint64_t address;
+      size_t size;
+      std::string mnemonic;
+      std::string operands;
+      std::vector<uint8_t> bytes;
+  };
+
+  // Architecture 提供分析能力
+  class Architecture {
+  public:
+      virtual std::unique_ptr<Disassembler> createDisassembler() = 0;
+      virtual std::unique_ptr<InstructionAnalyzer> createAnalyzer() = 0;
+  };
+
+  // 指令分析器接口
+  class InstructionAnalyzer {
+  public:
+      virtual ~InstructionAnalyzer() = default;
+
+      // 控制流分类
+      virtual bool isReturn(const Instruction& insn) const = 0;
+      virtual bool isCall(const Instruction& insn) const = 0;
+      virtual bool isUnconditionalJump(const Instruction& insn) const = 0;
+      virtual bool isConditionalJump(const Instruction& insn) const = 0;
+      virtual bool isIndirectJump(const Instruction& insn) const = 0;
+
+      // 获取跳转目标
+      virtual std::optional<uint64_t> getJumpTarget(const Instruction& insn) const = 0;
+      virtual std::optional<uint64_t> getCallTarget(const Instruction& insn) const = 0;
+
+      // 更多分析
+      virtual bool isNop(const Instruction& insn) const = 0;
+      virtual bool isInterrupt(const Instruction& insn) const = 0;
+      virtual bool affectsControlFlow(const Instruction& insn) const = 0;
+  };
+
+  ---
+  X86 实现
+
+  class X86InstructionAnalyzer : public InstructionAnalyzer {
+  public:
+      bool isReturn(const Instruction& insn) const override {
+          return insn.mnemonic == "ret" ||
+                 insn.mnemonic == "retn" ||
+                 insn.mnemonic == "retf";
+      }
+
+      bool isCall(const Instruction& insn) const override {
+          return insn.mnemonic == "call";
+      }
+
+      bool isUnconditionalJump(const Instruction& insn) const override {
+          return insn.mnemonic == "jmp";
+      }
+
+      bool isConditionalJump(const Instruction& insn) const override {
+          const auto& m = insn.mnemonic;
+          if (m.empty() || m[0] != 'j') return false;
+          if (m == "jmp") return false;
+
+          // je, jne, jl, jle, jg, jge, jb, jbe, ja, jae, js, jns, jo, jno...
+          static const std::unordered_set<std::string> jcc = {
+              "je", "jz", "jne", "jnz", "jl", "jnge", "jle", "jng",
+              "jg", "jnle", "jge", "jnl", "jb", "jnae", "jc", "jbe", "jna",
+              "ja", "jnbe", "jae", "jnb", "jnc", "js", "jns", "jo", "jno",
+              "jp", "jpe", "jnp", "jpo", "jcxz", "jecxz", "jrcxz",
+              "loop", "loope", "loopz", "loopne", "loopnz"
+          };
+          return jcc.count(m) > 0;
+      }
+
+      bool isIndirectJump(const Instruction& insn) const override {
+          if (insn.mnemonic != "jmp") return false;
+
+          const auto& op = insn.operands;
+          // jmp rax, jmp [rax], jmp qword ptr [rax+rcx*8]
+          // 直接跳转是 jmp 0x1234
+
+          // 简单判断：不是纯数字就是间接
+          return !op.empty() && !std::isdigit(op[0]) && op[0] != '0';
+      }
+
+      std::optional<uint64_t> getJumpTarget(const Instruction& insn) const override {
+          if (!isUnconditionalJump(insn) && !isConditionalJump(insn)) {
+              return std::nullopt;
+          }
+
+          if (isIndirectJump(insn)) {
+              return std::nullopt;  // 无法静态确定
+          }
+
+          return parseAddress(insn.operands);
+      }
+
+      std::optional<uint64_t> getCallTarget(const Instruction& insn) const override {
+          if (!isCall(insn)) return std::nullopt;
+
+          // 间接调用: call rax, call [rax]
+          const auto& op = insn.operands;
+          if (!op.empty() && !std::isdigit(op[0]) && op[0] != '0') {
+              return std::nullopt;
+          }
+
+          return parseAddress(op);
+      }
+
+      bool isNop(const Instruction& insn) const override {
+          return insn.mnemonic == "nop" ||
+                 (insn.mnemonic == "xchg" && insn.operands == "eax, eax") ||
+                 (insn.mnemonic == "lea" && isNopLea(insn));
+      }
+
+      bool isInterrupt(const Instruction& insn) const override {
+          return insn.mnemonic == "int" ||
+                 insn.mnemonic == "int3" ||
+                 insn.mnemonic == "syscall" ||
+                 insn.mnemonic == "sysenter";
+      }
+
+      bool affectsControlFlow(const Instruction& insn) const override {
+          return isReturn(insn) || isCall(insn) ||
+                 isUnconditionalJump(insn) || isConditionalJump(insn) ||
+                 isInterrupt(insn);
+      }
+
+  private:
+      std::optional<uint64_t> parseAddress(const std::string& op) const {
+          try {
+              return std::stoull(op, nullptr, 0);
+          } catch (...) {
+              return std::nullopt;
+          }
+      }
+
+      bool isNopLea(const Instruction& insn) const {
+          // lea rax, [rax + 0] 等 NOP 变体
+          return insn.operands.find("[") != std::string::npos &&
+                 insn.operands.find("0x0") != std::string::npos;
+      }
+  };
+
+  ---
+  整合到 Architecture
+
+  class ArchX86_64 : public Architecture {
+  public:
+      std::string name() const override { return "x86_64"; }
+
+      std::unique_ptr<Disassembler> createDisassembler() override {
+          return std::make_unique<CapstoneDisassembler>(CS_ARCH_X86, CS_MODE_64);
+      }
+
+      std::unique_ptr<InstructionAnalyzer> createAnalyzer() override {
+          return std::make_unique<X86InstructionAnalyzer>();
+      }
+  };
+
+  ---
+  使用方式
+
+  auto arch = std::make_shared<ArchX86_64>();
+  auto disasm = arch->createDisassembler();
+  auto analyzer = arch->createAnalyzer();
+
+  auto result = disasm->disassemble(code, addr);
+
+  for (const auto& insn : result.instructions) {
+      if (analyzer->isConditionalJump(insn)) {
+          auto target = analyzer->getJumpTarget(insn);
+          printf("条件跳转: %s -> 0x%llx\n", insn.text().c_str(), *target);
+      }
+
+      if (analyzer->isReturn(insn)) {
+          printf("返回指令: %s\n", insn.text().c_str());
+      }
+  }
+
+  ---
+  为什么这样设计
+
+  | 考虑因素         | 继承方案             | Analyzer 方案         |
+  |------------------|----------------------|-----------------------|
+  | 指令创建开销     | 需要 new/工厂        | 纯值类型，零开销      |
+  | 与 Capstone 集成 | 需要转换             | 直接用                |
+  | 架构扩展         | 新增子类             | 新增 Analyzer         |
+  | 单一职责         | 指令既存数据又有行为 | 数据和行为分离        |
+  | 测试             | 需要 mock 指令       | 可以单独测试 Analyzer |
+
+  业界做法：LLVM、Ghidra、Binary Ninja 都是数据+分析器分离。
+
+> 我如何知道该分离还是该继承呢？
+
+● 核心原则：数据和行为的关系。
+
+  判断流程图
+
+  这个类的主要职责是什么？
+          │
+          ├─► 存储数据 ──► 用纯结构体/值类型，行为放别处
+          │
+          └─► 执行行为 ──► 行为是否因"类型"而异？
+                                │
+                                ├─► 是 ──► 继承
+                                │
+                                └─► 否 ──► 组合/策略模式
+
+  ---
+  三个判断标准
+
+  1. 问自己：这个东西"是什么"还是"有什么"
+
+  // 继承：Dog IS-A Animal
+  class Animal { virtual void speak() = 0; };
+  class Dog : public Animal { void speak() override { /* bark */ } };
+
+  // 组合：Car HAS-A Engine
+  class Car {
+      Engine engine_;  // Car 不是 Engine，Car 有 Engine
+  };
+
+  指令的情况：
+  - X86Instruction IS-A Instruction？❌ 不自然
+  - Instruction HAS (analyzed by) Analyzer？✅ 更自然
+
+  2. 问自己：对象创建频率
+
+  | 频率                         | 推荐              |
+  |------------------------------|-------------------|
+  | 高频创建（指令、点、向量）   | 值类型 + 外部分析 |
+  | 低频创建（窗口、连接、模块） | 可以用继承        |
+
+  // 高频 - 别用继承
+  struct Point { float x, y; };           // ✅
+  class Point { virtual float dist(); };  // ❌ 虚表开销
+
+  // 低频 - 继承可以
+  class Window { virtual void draw() = 0; };
+  class Button : public Window { ... };   // ✅
+
+  3. 问自己：行为属于谁
+
+  // 行为属于对象本身 → 继承
+  class Shape {
+      virtual double area() = 0;  // 面积是 Shape 的固有属性
+  };
+
+  // 行为属于外部观察者 → 分离
+  struct Instruction { ... };
+  class Analyzer {
+      bool isJump(const Instruction&);  // "是否跳转"是分析视角
+  };
+
+  ---
+  实际例子
+
+  用继承 ✅
+
+  // 不同类型有不同行为，且行为是核心职责
+  class BinaryModule {
+      virtual bool load(const std::string& path) = 0;
+      virtual std::vector<uint8_t> readAt(uint64_t addr, size_t size) = 0;
+  };
+
+  class PEBinaryModule : public BinaryModule { ... };
+  class ELFBinaryModule : public BinaryModule { ... };
+
+  为什么：
+  - 加载逻辑完全不同
+  - 这是模块的核心行为
+  - 创建频率低（一个文件一个模块）
+
+  用分离 ✅
+
+  // 数据结构 + 外部分析
+  struct Instruction {
+      uint64_t address;
+      std::string mnemonic;
+      std::string operands;
+  };
+
+  class InstructionAnalyzer {
+      bool isJump(const Instruction&);
+      bool isCall(const Instruction&);
+  };
+
+  为什么：
+  - 指令是高频创建的数据
+  - "是否跳转"是分析视角，不是指令本身的行为
+  - 同一条指令，不同分析器可能有不同解读
+
+  ---
+  快速判断表
+
+  | 问题               | 选继承 | 选分离            |
+  |--------------------|--------|-------------------|
+  | 创建频率？         | 低     | 高                |
+  | 行为是固有的？     | 是     | 否（是观察/分析） |
+  | 需要多态调用？     | 是     | 否                |
+  | 数据和行为能分开？ | 否     | 是                |
+  | 会有多种分析方式？ | 否     | 是                |
+
+  ---
+  你的代码中
+
+  | 类           | 推荐              | 原因               |
+  |--------------|-------------------|--------------------|
+  | Instruction  | 值类型 + Analyzer | 高频、数据为主     |
+  | BasicBlock   | 值类型 + Builder  | 高频、数据为主     |
+  | Architecture | 继承              | 低频、行为差异大   |
+  | BinaryModule | 继承              | 低频、加载逻辑不同 |
+  | Disassembler | 继承              | 低频、实现完全不同 |
+  | Expr         | 继承或 variant    | 树结构、需要多态   |
+
+  ---
+  经验法则
+
+  如果犹豫，先用组合/分离。
+
+  从组合改成继承容易，反过来难。
+
+
+> BasicBlock 存储指令应该是用 list还是vector?
+
+● 用 std::vector，几乎没有悬念。
+
+  对比
+
+  | 操作     | vector           | list                 |
+  |----------|------------------|----------------------|
+  | 顺序遍历 | 极快（缓存友好） | 慢（指针跳转）       |
+  | 尾部插入 | O(1) 均摊        | O(1)                 |
+  | 中间插入 | O(n)             | O(1)                 |
+  | 随机访问 | O(1)             | O(n)                 |
+  | 内存开销 | 低               | 高（每节点两个指针） |
+
+  ---
+  BasicBlock 的访问模式
+
+  // 构建时：顺序尾部添加
+  block.instructions.push_back(insn1);
+  block.instructions.push_back(insn2);
+
+  // 分析时：顺序遍历
+  for (const auto& insn : block.instructions) {
+      analyze(insn);
+  }
+
+  // 偶尔：随机访问
+  auto& last = block.instructions.back();
+  auto& first = block.instructions.front();
+
+  完美符合 vector 的优势场景。
+
+  ---
+  什么时候用 list
+
+  // 需要频繁中间插入/删除，且迭代器不能失效
+  std::list<Instruction> instructions;
+
+  auto it = findInsertPoint();
+  instructions.insert(it, new_insn);  // O(1)，且其他迭代器有效
+
+  但 BasicBlock 几乎不需要这个：
+  - 构建完成后很少修改
+  - 即使要插入，也可以重建整个块
+
+  ---
+  性能差距
+
+  // 遍历 1000 条指令
+  // vector: ~0.1μs（连续内存，CPU 预取）
+  // list:   ~1-5μs（随机内存访问，cache miss）
+
+  10-50 倍差距，在大规模分析时很明显。
+
+  ---
+  结论
+
+  struct BasicBlock {
+      std::vector<Instruction> instructions;  // ✅
+      // std::list<Instruction> instructions; // ❌
+  };
+
+  除非你有明确的中间插入需求，否则永远选 vector。
+
+> bool Parser::parseFunctions()
+{
+  // collect entrances
+  std::set<uint32_t> leaders = searchLeaders();
+  std::stack<uint32_t> workLists(std::deque<uint32_t>(leaders.begin(), leaders.end()));
+  auto instAnalyzer = bin_.instructionAnalyzer();
+
+  while (!workLists.empty())
+  {
+    RVA_t rva = workLists.top();
+    workLists.pop();
+
+    RVA_t currentRva = rva;
+    while (auto inst = bin_.disassembleOne(currentRva))
+    {
+      std::cout
+      << std::format("{:08X} {}\t{}", inst->address + bin_.imageBase(), inst->mnemonic, inst->operands)
+      << std::endl;;
+
+      if (instAnalyzer->isConditionalJump(*inst))
+      {
+        auto target = instAnalyzer->getJumpTarget(*inst);
+        auto fall = inst->address + inst->size();
+        if (target && leaders.insert(target.value()).second)
+        {
+          workLists.push(target.value());
+        }
+
+        if (leaders.insert(fall).second)
+        {
+          workLists.push(fall);
+        }
+
+        break;
+      }
+
+      if (instAnalyzer->isUnconditionalJump(*inst))
+      {
+        auto target = instAnalyzer->getJumpTarget(*inst);
+
+        if (target && leaders.insert(target.value()).second)
+        {
+          workLists.push(target.value());
+        }
+
+        break;
+      }
+
+      if (instAnalyzer->isReturn(*inst))
+      {
+        break;
+      }
+      currentRva += inst->size();
+    }
+
+    std::cout << "---------------------------------------------------" <<std::endl;
+  }
+
+  buildBlocks(leaders);
+  return true;
+}
+
+
+
+void Parser::buildBlocks(std::set<uint32_t>& leaders)
+{
+  std::unordered_map<uint32_t, std::shared_ptr<BasicBlock>> blocks_map(leaders.size());
+
+  // fill the blocks_map
+  for (uint32_t rva : leaders)
+  {
+    blocks_map[rva] = std::make_shared<BasicBlock>(rva);
+  }
+
+
+  for (uint32_t rva : leaders)
+  {
+    uint32_t blockRva = rva;
+    uint32_t currentRva = rva;
+
+    auto iter = blocks_map.find(blockRva);
+    assert(iter != blocks_map.end());
+    std::shared_ptr<BasicBlock> block = iter->second;
+
+
+    while (auto inst = bin_.disassembleOne(currentRva))
+    {
+      auto inst_ptr = std::make_shared<Instruction>(std::move(*inst));
+      block->addInstruction(inst_ptr);
+
+
+
+      currentRva += inst_ptr->size();
+      if(blocks_map.find(currentRva) != blocks_map.end())
+        break;
+    }
+
+  }
+} 我现在构建基本快还缺什么东西？
+
+● 目前缺少几个关键部分：
+
+  缺失清单
+
+  | 缺失项                  | 重要性 | 说明                    |
+  |-------------------------|--------|-------------------------|
+  | 后继关系 (successors)   | 高     | 控制流去向              |
+  | 前驱关系 (predecessors) | 高     | 控制流来源              |
+  | 块结束类型 (EndType)    | 中     | Return/Jump/FallThrough |
+  | 边类型 (EdgeType)       | 中     | 条件真/假/无条件        |
+  | visited 检查            | 高     | 避免重复反汇编          |
+  | 间接跳转处理            | 中     | jmp rax 等情况          |
+
+  ---
+  修复后的完整实现
+
+  // ==================== 数据结构补充 ====================
+  enum class BlockEndType {
+      Invalid,
+      FallThrough,
+      ConditionalJump,
+      UnconditionalJump,
+      IndirectJump,
+      Return,
+  };
+
+  enum class EdgeType {
+      FallThrough,
+      ConditionalTrue,
+      ConditionalFalse,
+      Unconditional,
+  };
+
+  struct CFGEdge {
+      RVA_t from;
+      RVA_t to;
+      EdgeType type;
+  };
+
+  class BasicBlock {
+  public:
+      // ... 现有成员 ...
+
+      BlockEndType endType() const { return end_type_; }
+      void setEndType(BlockEndType t) { end_type_ = t; }
+
+      const std::vector<RVA_t>& successors() const { return successors_; }
+      const std::vector<RVA_t>& predecessors() const { return predecessors_; }
+
+      void addSuccessor(RVA_t addr) { successors_.push_back(addr); }
+      void addPredecessor(RVA_t addr) { predecessors_.push_back(addr); }
+
+  private:
+      BlockEndType end_type_ = BlockEndType::Invalid;
+      std::vector<RVA_t> successors_;
+      std::vector<RVA_t> predecessors_;
+  };
+
+  // ==================== 修复后的 parseFunctions ====================
+  bool Parser::parseFunctions()
+  {
+      std::set<RVA_t> leaders = searchLeaders();
+      std::stack<RVA_t> workList;
+      std::set<RVA_t> visited;  // 新增：避免重复处理
+
+      // 初始化 worklist
+      for (RVA_t leader : leaders) {
+          workList.push(leader);
+      }
+
+      auto analyzer = bin_.instructionAnalyzer();
+
+      while (!workList.empty())
+      {
+          RVA_t rva = workList.top();
+          workList.pop();
+
+          // 跳过已访问
+          if (!visited.insert(rva).second) {
+              continue;
+          }
+
+          RVA_t currentRva = rva;
+          while (auto inst = bin_.disassembleOne(currentRva))
+          {
+              RVA_t nextRva = currentRva + inst->size();
+
+              if (analyzer->isConditionalJump(*inst))
+              {
+                  auto target = analyzer->getJumpTarget(*inst);
+
+                  // 跳转目标
+                  if (target && leaders.insert(*target).second) {
+                      workList.push(*target);
+                  }
+
+                  // Fall-through
+                  if (leaders.insert(nextRva).second) {
+                      workList.push(nextRva);
+                  }
+                  break;
+              }
+
+              if (analyzer->isUnconditionalJump(*inst))
+              {
+                  if (analyzer->isIndirectJump(*inst)) {
+                      // 间接跳转，无法静态确定目标
+                      break;
+                  }
+
+                  auto target = analyzer->getJumpTarget(*inst);
+                  if (target && leaders.insert(*target).second) {
+                      workList.push(*target);
+                  }
+                  break;
+              }
+
+              if (analyzer->isReturn(*inst)) {
+                  break;
+              }
+
+              // 检查是否踩到其他 leader
+              if (leaders.count(nextRva)) {
+                  break;
+              }
+
+              currentRva = nextRva;
+          }
+      }
+
+      buildBlocks(leaders);
+      connectEdges();  // 新增
+      return true;
+  }
+
+  // ==================== 修复后的 buildBlocks ====================
+  void Parser::buildBlocks(const std::set<RVA_t>& leaders)
+  {
+      blocks_.clear();
+
+      // 创建所有块
+      for (RVA_t rva : leaders) {
+          blocks_[rva] = std::make_shared<BasicBlock>(rva);
+      }
+
+      auto analyzer = bin_.instructionAnalyzer();
+
+      for (RVA_t rva : leaders)
+      {
+          auto block = blocks_[rva];
+          RVA_t currentRva = rva;
+
+          while (auto inst = bin_.disassembleOne(currentRva))
+          {
+              block->addInstruction(std::make_shared<Instruction>(std::move(*inst)));
+
+              const auto& lastInst = *block->instructions().back();
+              RVA_t nextRva = currentRva + lastInst.size();
+
+              // 判断块结束条件和后继
+              if (analyzer->isConditionalJump(lastInst))
+              {
+                  block->setEndType(BlockEndType::ConditionalJump);
+
+                  if (auto target = analyzer->getJumpTarget(lastInst)) {
+                      block->addSuccessor(*target);  // true 分支
+                  }
+                  block->addSuccessor(nextRva);  // false 分支 (fall-through)
+                  break;
+              }
+
+              if (analyzer->isUnconditionalJump(lastInst))
+              {
+                  if (analyzer->isIndirectJump(lastInst)) {
+                      block->setEndType(BlockEndType::IndirectJump);
+                      // 后继未知
+                  } else {
+                      block->setEndType(BlockEndType::UnconditionalJump);
+                      if (auto target = analyzer->getJumpTarget(lastInst)) {
+                          block->addSuccessor(*target);
+                      }
+                  }
+                  break;
+              }
+
+              if (analyzer->isReturn(lastInst))
+              {
+                  block->setEndType(BlockEndType::Return);
+                  // 无后继
+                  break;
+              }
+
+              // 被下一个 leader 截断
+              if (blocks_.count(nextRva))
+              {
+                  block->setEndType(BlockEndType::FallThrough);
+                  block->addSuccessor(nextRva);
+                  break;
+              }
+
+              currentRva = nextRva;
+          }
+      }
+  }
+
+  // ==================== 新增：连接边和前驱 ====================
+  void Parser::connectEdges()
+  {
+      edges_.clear();
+
+      for (auto& [rva, block] : blocks_)
+      {
+          const auto& successors = block->successors();
+
+          for (size_t i = 0; i < successors.size(); i++)
+          {
+              RVA_t succRva = successors[i];
+
+              // 设置前驱
+              auto it = blocks_.find(succRva);
+              if (it != blocks_.end()) {
+                  it->second->addPredecessor(rva);
+              }
+
+              // 确定边类型
+              EdgeType edgeType;
+              switch (block->endType())
+              {
+                  case BlockEndType::ConditionalJump:
+                      // 第一个是跳转目标(true)，第二个是fall-through(false)
+                      edgeType = (i == 0) ? EdgeType::ConditionalTrue
+                                          : EdgeType::ConditionalFalse;
+                      break;
+                  case BlockEndType::UnconditionalJump:
+                      edgeType = EdgeType::Unconditional;
+                      break;
+                  default:
+                      edgeType = EdgeType::FallThrough;
+                      break;
+              }
+
+              edges_.push_back({rva, succRva, edgeType});
+          }
+      }
+  }
+
+  ---
+  打印验证
+
+  void Parser::dumpCFG() const
+  {
+      std::cout << "=== CFG: " << blocks_.size() << " blocks, "
+                << edges_.size() << " edges ===\n\n";
+
+      for (const auto& [rva, block] : blocks_)
+      {
+          std::cout << std::format("Block 0x{:08X}", rva + bin_.imageBase());
+
+          // 前驱
+          if (!block->predecessors().empty()) {
+              std::cout << " <- [";
+              for (auto pred : block->predecessors()) {
+                  std::cout << std::format(" 0x{:X}", pred + bin_.imageBase());
+              }
+              std::cout << " ]";
+          }
+          std::cout << "\n";
+
+          // 指令
+          for (const auto& inst : block->instructions()) {
+              std::cout << std::format("  {:08X}: {} {}\n",
+                  inst->address + bin_.imageBase(),
+                  inst->mnemonic,
+                  inst->operands);
+          }
+
+          // 后继
+          std::cout << "  -> ";
+          if (block->successors().empty()) {
+              std::cout << "(exit)";
+          } else {
+              for (auto succ : block->successors()) {
+                  std::cout << std::format("0x{:X} ", succ + bin_.imageBase());
+              }
+          }
+          std::cout << "\n\n";
+      }
+  }
+
+  ---
+  输出示例
+
+  === CFG: 4 blocks, 5 edges ===
+
+  Block 0x00401000
+    00401000: push rbp
+    00401001: mov rbp, rsp
+    00401004: cmp edi, 0
+    00401007: je 0x401020
+    -> 0x401020 0x401009
+
+  Block 0x00401009 <- [ 0x401000 ]
+    00401009: mov eax, 1
+    0040100E: jmp 0x401025
+    -> 0x401025
+
+  Block 0x00401020 <- [ 0x401000 ]
+    00401020: xor eax, eax
+    -> 0x401025
+
+  Block 0x00401025 <- [ 0x401009 0x401020 ]
+    00401025: pop rbp
+    00401026: ret
+    -> (exit)
+
+  ---
+  还可以补充
+
+  | 功能        | 说明                        |
+  |-------------|-----------------------------|
+  | CFG 类      | 封装 blocks_ 和 edges_      |
+  | Function 类 | 一个函数包含多个 BasicBlock |
+  | 导出 DOT    | 可视化验证                  |
+  | 入口块标记  | entry_block_ 指针           |
+
+  需要我帮你封装成完整的 CFG 类吗？
+
+> connectEdges 函数不够吗？ 为什么还需一个CFG 类，
+不要给我完整代码，可以先用伪代码表达想法，我需要完整实现，我会告诉你
+
+● 你说得对，不一定需要。取决于你的使用场景：
+
+  不需要 CFG 类的情况
+
+  Parser 持有 blocks_ 和 edges_
+            │
+            ▼
+      直接在 Parser 上做分析
+      parser.dumpCFG()
+      parser.findLoops()
+      parser.exportDot()
+
+  如果 Parser 就是最终的"持有者"，connectEdges 足够。
+
+  ---
+  需要 CFG 类的情况
+
+  Parser 构建完成后，返回 CFG 对象
+            │
+            ▼
+      CFG 被传递给其他模块
+      - DataFlowAnalyzer.analyze(cfg)
+      - DominatorTree.build(cfg)
+      - LoopDetector.detect(cfg)
+      - SwitchAnalyzer.analyze(cfg, block)
+
+  核心问题：你的 blocks/edges 需要被其他模块使用吗？
+
+  ---
+  判断标准
+
+  | 问题                   | 不需要 CFG 类   | 需要 CFG 类       |
+  |------------------------|-----------------|-------------------|
+  | 谁持有数据？           | Parser 永久持有 | Parser 构建后转移 |
+  | 谁做分析？             | Parser 自己     | 独立的分析器      |
+  | 一个 Parser 几个 CFG？ | 一个            | 多个（多函数）    |
+  | CFG 需要独立生命周期？ | 否              | 是                |
+
+  ---
+  我的建议
+
+  先不要 CFG 类。等你发现：
+  - 需要把 blocks/edges 传给别的分析器
+  - 或者一个二进制有多个函数，每个函数一个 CFG
+
+  再抽出来也不迟。
+
+  现在 Parser 直接持有 blocks_ 和 edges_ 就行。
+
+> 我现在的设计是Parser属于自动化分析类，block和function 都归BinaryModule 所有
+
+● 这个设计很清晰：
+
+  Parser（构建器）──构建──▶ blocks/edges ──归属──▶ BinaryModule（持有者）
+
+  两种实现方式
+
+  方式1：Parser 直接写入 BinaryModule
+
+  Parser::parse(BinaryModule& module)
+      │
+      ├─► 构建 blocks
+      ├─► 构建 edges
+      │
+      └─► module.addFunction(entry, blocks, edges)
+
+  // 伪代码
+  class Parser {
+      void parse(BinaryModule& module) {
+          auto leaders = collectLeaders();
+          auto blocks = buildBlocks(leaders);
+          connectEdges(blocks);
+
+          // 直接写入 module
+          module.addFunction(entry_rva, std::move(blocks), std::move(edges));
+      }
+  };
+
+  方式2：Parser 返回结果，外部写入
+
+  Parser::parse() ──返回──▶ ParseResult
+                                │
+                                ▼
+                      module.addFunction(result)
+
+  // 伪代码
+  struct ParseResult {
+      RVA_t entry;
+      BlockMap blocks;
+      std::vector<Edge> edges;
+  };
+
+  class Parser {
+      ParseResult parse() {
+          // ...构建...
+          return { entry, std::move(blocks), std::move(edges) };
+      }
+  };
+
+  // 调用方
+  auto result = parser.parse();
+  module.addFunction(std::move(result));
+
+  ---
+  建议
+
+  | 方式  | 适用场景                                |
+  |-------|-----------------------------------------|
+  | 方式1 | Parser 和 BinaryModule 紧耦合，简单直接 |
+  | 方式2 | Parser 可复用，结果可以给多个消费者     |
+
+  如果 Parser 只服务于 BinaryModule，方式1 更简单。
+
+  ---
+  BinaryModule 的结构
+
+  // 伪代码
+  class BinaryModule {
+      std::vector<Function> functions_;
+
+  public:
+      Function* addFunction(RVA_t entry, BlockMap blocks, EdgeList edges);
+      Function* functionAt(RVA_t addr);
+      BasicBlock* blockAt(RVA_t addr);  // 跨函数查找
+  };
+
+  class Function {
+      RVA_t entry_;
+      BlockMap blocks_;
+      EdgeList edges_;
+
+  public:
+      BasicBlock* entryBlock();
+      BasicBlock* blockAt(RVA_t addr);
+      // ... 遍历接口 ...
+  };
+
+  这样层次是：
+  BinaryModule
+      └── Function[]
+              └── BasicBlock[]
+                      └── Instruction[]
+
+  你倾向方式1还是方式2？

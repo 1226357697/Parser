@@ -1,4 +1,5 @@
 #include "Parser.h"
+#include <unordered_map>
 #include <format>
 #include <iostream>
 
@@ -65,10 +66,99 @@ bool Parser::parseFunctions()
     std::cout << "---------------------------------------------------" <<std::endl;
   }
 
+  buildBlocks(leaders);
   return true;
 }
 
 
+
+void Parser::buildBlocks(std::set<uint32_t>& leaders)
+{
+  std::unordered_map<uint32_t, std::shared_ptr<BasicBlock>> blocks_map(leaders.size());
+
+  // fill the blocks_map
+  for (uint32_t rva : leaders)
+  {
+    blocks_map[rva] = std::make_shared<BasicBlock>(rva);
+  }
+
+  auto instAnalyzer = bin_.instructionAnalyzer();
+
+  for (uint32_t rva : leaders)
+  {
+    uint32_t blockRva = rva;
+    uint32_t currentRva = rva;
+
+    auto iter = blocks_map.find(blockRva);
+    assert(iter != blocks_map.end());
+    std::shared_ptr<BasicBlock> block = iter->second;
+
+
+    while (auto inst = bin_.disassembleOne(currentRva))
+    {
+      auto inst_ptr = std::make_shared<Instruction>(std::move(*inst));
+      block->addInstruction(inst_ptr);
+
+
+      if (instAnalyzer->isConditionalJump(*inst))
+      {
+        block->setEndType(BasicBlock::EndTYpe::ConditionalJump);
+        auto target = instAnalyzer->getJumpTarget(*inst);
+        auto fall = inst->address + inst->size();
+        
+        if (target)
+        {
+          auto iter = blocks_map.find(target.value());
+          assert(iter != blocks_map.end());
+          block->addSuccessor(iter->second);
+          iter->second->addPredecessor(block);
+        }
+
+        {
+          auto iter = blocks_map.find(fall);
+          assert(iter != blocks_map.end());
+          block->addSuccessor(iter->second);
+          iter->second->addPredecessor(block);
+        }
+        break;
+      }
+
+      if (instAnalyzer->isUnconditionalJump(*inst))
+      {
+        if (instAnalyzer->isIndirectJump(*inst))
+        {
+          block->setEndType(BasicBlock::EndTYpe::IndirectJump);
+        }
+        else
+        {
+          block->setEndType(BasicBlock::EndTYpe::UnconditionalJump);
+        }
+
+        auto target = instAnalyzer->getJumpTarget(*inst);
+
+        if (target)
+        {
+          auto iter = blocks_map.find(target.value());
+          assert(iter != blocks_map.end());
+          block->addSuccessor(iter->second);
+          iter->second->addPredecessor(block);
+        }
+
+        break;
+      }
+
+      if (instAnalyzer->isReturn(*inst))
+      {
+        break;
+      }
+
+      currentRva += inst_ptr->size();
+      if(blocks_map.find(currentRva) != blocks_map.end())
+        break;
+    }
+
+  }
+}
 
 std::set<uint32_t> Parser::searchLeaders()
 {
