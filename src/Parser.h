@@ -2,7 +2,7 @@
 
 #include "BinaryModule.h"
 #include <vector>
-#include <stack>
+#include <map>
 #include "Function.h"
 
 class Parser
@@ -10,12 +10,14 @@ class Parser
 public:
   Parser(BinaryModule& bin);
   bool parseFunctions();
+  bool parseFunction(RVA_t startRva);
 
 protected:
-  void buildBlocks(std::set<uint32_t>& leaders);
-  std::set<uint32_t> searchLeaders();
+  std::set<RVA_t> collectModuleEntrance();
+  
 
 private:
   BinaryModule& bin_;
-  std::stack<uint32_t> workList_;
+  std::vector<std::shared_ptr<Function>> functions_;
+  std::map<RVA_t, std::shared_ptr<BasicBlock>> blocks_;
 };

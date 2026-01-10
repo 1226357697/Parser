@@ -9,7 +9,7 @@
 class BasicBlock
 {
 public:
-	enum class EndTYpe
+	enum class EndType
 	{
 		Invalid = 0,
 		IndirectJump,
@@ -17,7 +17,11 @@ public:
 		UnconditionalJump,
 		Return,
 		Call,
-		FallThrough
+		IndirectCall,
+		FallThrough,
+		Syscall,
+		ITBlock,
+		TableBranch
 	};
 
 public:
@@ -28,16 +32,18 @@ public:
 	void addInstruction(std::shared_ptr<Instruction> inst);
 	void addSuccessor(std::shared_ptr<BasicBlock> bb);
 	void addPredecessor(std::shared_ptr<BasicBlock> bb);
-	inline void setEndType(EndTYpe endType) { endType_  = endType;}
+	inline void setEndType(EndType endType) { endType_  = endType;}
 
 	inline RVA_t startAddress() const { return startAddress_;};
 	RVA_t endAddress() const { return endAddress_;}
 	size_t getSize();
-	inline EndTYpe endType() { return endType_; };
+	inline EndType endType() { return endType_; };
+
+	std::shared_ptr<BasicBlock> splitAt(RVA_t rva);
 private:
 	RVA_t startAddress_;
 	RVA_t endAddress_;
-	EndTYpe endType_;
+	EndType endType_;
 	std::vector<std::shared_ptr<Instruction>> instructions_;
 
 	std::vector<std::shared_ptr<BasicBlock>> predecessors_; // Ç°Çý
