@@ -47,6 +47,8 @@ public:
 
   virtual std::vector<uint8_t> readBytes(RVA_t rva, size_t size);
 
+  virtual RVA_t VA2RVA(uint64_t address);
+
 protected:
 
   virtual bool doLoad(const std::string& path) = 0;

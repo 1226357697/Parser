@@ -87,3 +87,8 @@ std::vector<uint8_t> BinaryModule::readBytes(RVA_t rva, size_t size)
   auto bytyes =  binary_->get_content_from_virtual_address(va, size);
   return std::vector<uint8_t>(bytyes.begin(), bytyes.end());
 }
+
+RVA_t BinaryModule::VA2RVA(uint64_t address)
+{
+    return (RVA_t)(address - binary_->imagebase());
+}

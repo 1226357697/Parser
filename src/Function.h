@@ -3,6 +3,7 @@
 #include "BasicBlock.h"
 #include "BinaryModule.h"
 
+class BinaryModule;
 class Function
 {
 public:
