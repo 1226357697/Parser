@@ -32,6 +32,102 @@ bool Parser::parseFunctions()
   return true;
 }
 
+static std::string hex(uint64_t addr) {
+  std::ostringstream ss;
+  ss << "0x" << std::hex << addr;
+  return ss.str();
+}
+
+static std::string escape(const std::string& s) {
+  std::string out;
+  for (char c : s) {
+    if (c == '"') out += "\\\"";
+    else if (c == '\\') out += "\\\\";
+    else out += c;
+  }
+  return out;
+}
+
+void Parser::exportToDot(const std::string& fileName)
+{
+  std::ostringstream ss;
+  std::shared_ptr<Function> func = functions_.at(0x56f4);
+  auto analyzer = bin_.instructionAnalyzer();
+
+  ss << "digraph CFG {\n";
+  ss << "  node [shape=box, fontname=\"Courier\", fontsize=10];\n";
+  ss << "  edge [fontsize=8];\n\n";
+
+  for (auto& [rva, block] : func->blocks())
+  {
+    // 绘制节点
+    ss << "  \"" << hex(block->startAddress()) << "\" [label=\"";
+
+    // 块内指令
+    for (const auto& insn : block->instructions()) {
+      std::string instString = insn->mnemonic + "\t" + insn->operands;
+      ss << hex(insn->address) << ": " << escape(instString) << "\\l";
+    }
+
+    ss << "\"];\n";
+  }
+ 
+
+  ss << "\n";
+
+  // 绘制边
+  for (auto& [rva, block] : func->blocks())
+  {
+    std::vector<std::shared_ptr<BasicBlock>> successor = block->getSuccessors();
+    BasicBlock::EndType endType = block->endType();
+
+    for (auto successor : successor)
+    {
+      ss << "  \"" << hex(block->startAddress()) << "\" -> \"" << hex(successor->startAddress()) << "\"";
+      std::shared_ptr<Instruction>backInst =  block->instructions().back();
+      switch (endType) {
+      case BasicBlock::EndType::kConditionalJump:
+      {
+        auto target = analyzer->getJumpTarget(*backInst);
+        auto fall = backInst->address + backInst->size();
+        if (target && target.value() == successor->startAddress())
+        {
+          ss << " [color=green, label=\"T\"]";
+        }
+        if (fall == successor->startAddress())
+        {
+          ss << " [color=red, label=\"F\"]";
+        }
+
+        break;
+      }
+      case BasicBlock::EndType::kUnconditionalJump:
+      {
+        auto target = analyzer->getJumpTarget(*backInst);
+        if (target && target.value() == successor->startAddress())
+        {
+          ss << " [color=blue]";
+        }
+        break;
+      }
+
+      default:
+        break;
+      }
+    }
+
+    if(!successor.empty())
+      ss << ";\n";
+  }
+
+
+  ss << "}\n";
+
+  std::ofstream f(fileName);
+  f << ss.str();
+  //return ss.str();
+}
+
 bool Parser::buildFunctions()
 {
   for (auto& [rva, block] : blocks_)

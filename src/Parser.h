@@ -30,6 +30,7 @@ public:
   Parser(BinaryModule& bin);
   bool parseFunctions();
   
+  void exportToDot(const std::string& fileName);
 
 protected:
   std::set<Entrance> collectModuleEntrance();

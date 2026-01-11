@@ -30,5 +30,7 @@ int main()
     return 1;
   }
 
+  parser.exportToDot("function.dot");
+
   return 0;
 }
