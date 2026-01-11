@@ -20,6 +20,8 @@ struct Xref
 
   bool operator <(const Xref& other) const
   {
+    if (from != other.from) return from < other.from;
+    if (to != other.to) return to < other.to;
     return type < other.type;
   }
 };

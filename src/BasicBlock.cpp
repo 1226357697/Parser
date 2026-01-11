@@ -3,6 +3,9 @@
 
 BasicBlock::BasicBlock(RVA_t rva)
 :startAddress_(rva)
+, endAddress_(rva)         
+, tag_(Tag::kNone)          
+, endType_(EndType::kInvalid) 
 {
 }
 
@@ -32,6 +35,22 @@ size_t BasicBlock::getSize()
   return endAddress_ - startAddress_;
 }
 
+std::vector<std::shared_ptr<BasicBlock>> BasicBlock::getSuccessors() const
+{
+  std::vector<std::shared_ptr<BasicBlock>> result;
+  for (const auto& weak : successors_) {
+    if (auto ptr = weak.lock()) {
+      result.push_back(ptr);
+    }
+  }
+  return result;
+}
+
+const std::vector<std::shared_ptr<BasicBlock>>& BasicBlock::getPredecessors() const
+{
+  return predecessors_;
+}
+
 std::shared_ptr<BasicBlock> BasicBlock::splitAt(RVA_t rva)
 {
   assert(rva >= startAddress() && rva < endAddress());
@@ -52,7 +71,7 @@ std::shared_ptr<BasicBlock> BasicBlock::splitAt(RVA_t rva)
     endAddress_ = instructions_.back()->address + instructions_.back()->size();
 
   newBlock->setEndType(endType_);
-  endType_ = EndType::FallThrough;
+  endType_ = EndType::kFallThrough;
   return newBlock;
 }
 

@@ -5,10 +5,13 @@
 
 #include <LIEF/LIEF.hpp>
 #include "BinaryTypes.h"
-#include "Function.h"
+//#include "Function.h"
 #include "CrossReference.h"
 #include "Architecture.h"
 #include "InstructionAnalyzer.h"
+
+
+class BasicBlock;
 
 enum class FunctionType : uint32_t
 {
