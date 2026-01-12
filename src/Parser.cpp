@@ -98,7 +98,7 @@ bool Parser::exportFunctionToDot(RVA_t rva, const std::string& fileName)
       case BasicBlock::EndType::kConditionalJump:
       {
         auto target = analyzer->getJumpTarget(*backInst);
-        auto fall = backInst->address + backInst->size();
+        auto fall = analyzer->getNextAddress(*backInst);
         if (target && target.value() == successor->startAddress())
         {
           ss << " [color=green, label=\"T\"]";
@@ -210,7 +210,7 @@ void Parser::buildFunctionCFG(std::shared_ptr<Function> function)
       assert(analyzer->isConditionalJump(*inst));
 
       auto target = analyzer->getJumpTarget(*inst);
-      auto fall = inst->address + inst->size();
+      auto fall = analyzer->getNextAddress(*inst);
 
       if (target)
       {
@@ -254,7 +254,7 @@ void Parser::buildFunctionCFG(std::shared_ptr<Function> function)
     else if (endType == BasicBlock::EndType::kFallThrough)
     {
       auto inst = insts.back();
-      auto fall = inst->address + inst->size();
+      auto fall = analyzer->getNextAddress(*inst);
 
       {
         std::shared_ptr<BasicBlock>  successor = getBlock(fall);
@@ -320,6 +320,18 @@ void Parser::exploreBlocks(const Entrance& entrance, std::set<Entrance>& explore
     return;
   }
 
+  //if (entrance.type == EntranceType::kMaybeGap)
+  //{
+  //  uint32_t gasSize = GetGasSize(entrance.rva);
+  //  if (gasSize > 0)
+  //  {
+  //    exploreCall.insert(Entrance{ EntranceType::kFunction, entrance.rva + gasSize });
+
+  //    std::shared_ptr<BasicBlock> block = getOrCreateBlock(entrance.rva);
+  //    return;
+  //  }
+  //}
+
   std::set<RVA_t> leaders;
   std::set<RVA_t> visited;
   std::stack<RVA_t> workLists;
@@ -327,7 +339,7 @@ void Parser::exploreBlocks(const Entrance& entrance, std::set<Entrance>& explore
   leaders.insert(entrance.rva);
   workLists.push(entrance.rva);
 
-  auto instAnalyzer = bin_.instructionAnalyzer();
+  auto analyzer = bin_.instructionAnalyzer();
 
   while (!workLists.empty())
   {
@@ -363,11 +375,11 @@ void Parser::exploreBlocks(const Entrance& entrance, std::set<Entrance>& explore
         << std::endl;
 
 
-      if (instAnalyzer->isConditionalJump(*inst_ptr))
+      if (analyzer->isConditionalJump(*inst_ptr))
       {
         block->setEndType(BasicBlock::EndType::kConditionalJump);
-        auto target = instAnalyzer->getJumpTarget(*inst_ptr);
-        auto fall = inst_ptr->address + inst_ptr->size();
+        auto target = analyzer->getJumpTarget(*inst_ptr);
+        auto fall = analyzer->getNextAddress(*inst_ptr);
         if (target && leaders.insert(target.value()).second)
         {
           // add xref
@@ -384,9 +396,9 @@ void Parser::exploreBlocks(const Entrance& entrance, std::set<Entrance>& explore
         break;
       }
 
-      if (instAnalyzer->isUnconditionalJump(*inst_ptr))
+      if (analyzer->isUnconditionalJump(*inst_ptr))
       {
-        if (instAnalyzer->isIndirectJump(*inst_ptr))
+        if (analyzer->isIndirectJump(*inst_ptr))
         {
           block->setEndType(BasicBlock::EndType::kIndirectJump);
         }
@@ -395,7 +407,7 @@ void Parser::exploreBlocks(const Entrance& entrance, std::set<Entrance>& explore
           block->setEndType(BasicBlock::EndType::kUnconditionalJump);
         }
 
-        auto target = instAnalyzer->getJumpTarget(*inst_ptr);
+        auto target = analyzer->getJumpTarget(*inst_ptr);
 
         if (target && leaders.insert(target.value()).second)
         {
@@ -408,9 +420,9 @@ void Parser::exploreBlocks(const Entrance& entrance, std::set<Entrance>& explore
         break;
       }
 
-      if(instAnalyzer->isCall(*inst_ptr))
+      if(analyzer->isCall(*inst_ptr))
       {
-        auto target = instAnalyzer->getCallTarget(*inst_ptr);
+        auto target = analyzer->getCallTarget(*inst_ptr);
         if (target)
         {
           // add xref
@@ -421,14 +433,17 @@ void Parser::exploreBlocks(const Entrance& entrance, std::set<Entrance>& explore
         }
       }
 
-      if (instAnalyzer->isReturn(*inst_ptr))
+      if (analyzer->isReturn(*inst_ptr))
       {
         if (block->tag() == BasicBlock::Tag::kNormal)
         {
-          block->setTag(BasicBlock::Tag::kFunctionFinally);
+          block->setTag(BasicBlock::Tag::kFinally);
         }
 
         block->setEndType(BasicBlock::EndType::kReturn);
+
+
+        //exploreCall.insert(Entrance{ EntranceType::kMaybeGap, analyzer->getNextAddress(*inst_ptr)});
         break;
       }
       currentRva += inst_ptr->size();
@@ -517,5 +532,27 @@ std::shared_ptr<BasicBlock> Parser::findBlockContaining(RVA_t rva)
     return iter->second;
 
   return nullptr;
+}
+
+uint32_t Parser::GetGasSize(RVA_t rva)
+{
+  uint32_t gasSize = 0;
+  auto analyzer = bin_.instructionAnalyzer();
+
+  RVA_t currentRva = rva;
+  while (auto inst = bin_.disassembleOne(currentRva))
+  {
+    if (analyzer->isNop(*inst))
+    {
+      gasSize += inst->size();
+    }
+    else
+    {
+      break;
+    }
+
+    currentRva += inst->size();
+  }
+  return gasSize;
 }
 

@@ -29,7 +29,7 @@ public:
 		kNone = 0,
 		kNormal,
 		kFunctionEntry,
-		kFunctionFinally,
+		kFinally,
 	};
 
 public:

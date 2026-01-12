@@ -17,6 +17,7 @@ public:
   // 获取跳转目标
   virtual std::optional<uint64_t> getJumpTarget(const Instruction& insn) const = 0;
   virtual std::optional<uint64_t> getCallTarget(const Instruction& insn) const = 0;
+  virtual RVA_t getNextAddress(const Instruction& insn) const = 0;
 
   // 更多分析
   virtual bool isNop(const Instruction& insn) const = 0;

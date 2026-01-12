@@ -108,3 +108,8 @@ bool X86InstructionAnalyzer::isNopLea(const Instruction& insn) const {
   return insn.operands.find("[") != std::string::npos &&
     insn.operands.find("0x0") != std::string::npos;
 }
+
+RVA_t X86InstructionAnalyzer::getNextAddress(const Instruction& insn) const
+{
+  return insn.address + insn.size();
+}

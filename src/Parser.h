@@ -10,7 +10,8 @@ enum EntranceType : uint32_t
 {
   kNone = 0,
   kFunction,
-  kBlock
+  kBlock,
+  kMaybeGap
 };
 
 struct Entrance
@@ -43,6 +44,7 @@ protected:
   std::shared_ptr<BasicBlock> getBlock(RVA_t addr);
   std::shared_ptr<BasicBlock> getOrCreateBlock(RVA_t addr, bool* isNew = nullptr);
   std::shared_ptr<BasicBlock> findBlockContaining(RVA_t rva);
+  uint32_t GetGasSize(RVA_t rva);
 
   inline void addXref(const Xref& xref) { xrefManager_ .addXref( xref); };
 private:

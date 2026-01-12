@@ -30,7 +30,7 @@ int main()
     return 1;
   }
 
-  parser.exportFuncrionsToDot("./cfg_dir");
+  //parser.exportFuncrionsToDot("./cfg_dir");
 
   return 0;
 }
