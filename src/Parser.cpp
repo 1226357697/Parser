@@ -3,6 +3,9 @@
 #include <stack>
 #include <format>
 #include <iostream>
+#include <filesystem>
+
+namespace fs = std::filesystem;
 
 Parser::Parser(BinaryModule& bin)
 :bin_(bin)
@@ -48,10 +51,16 @@ static std::string escape(const std::string& s) {
   return out;
 }
 
-void Parser::exportToDot(const std::string& fileName)
+bool Parser::exportFunctionToDot(RVA_t rva, const std::string& fileName)
 {
   std::ostringstream ss;
-  std::shared_ptr<Function> func = functions_.at(0x56f4);
+  auto iter = functions_.find(rva);
+  if (iter == functions_.end())
+  {
+    return false;
+  }
+
+  std::shared_ptr<Function> func = iter->second;
   auto analyzer = bin_.instructionAnalyzer();
 
   ss << "digraph CFG {\n";
@@ -124,8 +133,27 @@ void Parser::exportToDot(const std::string& fileName)
   ss << "}\n";
 
   std::ofstream f(fileName);
+  if(!f.is_open())
+    return false;
+
   f << ss.str();
-  //return ss.str();
+  return true;
+}
+
+void Parser::exportFuncrionsToDot(const std::string& dirName)
+{
+  if (!fs::exists(dirName))
+  {
+    fs::create_directories(dirName);
+  }
+
+
+  for (auto& [rva, func] : functions_)
+  {
+    fs::path functionDotFile = fs::path(dirName) ;
+    functionDotFile = functionDotFile  / (hex(rva) + "_cfg.dot");
+    exportFunctionToDot(rva, functionDotFile.string());
+  }
 }
 
 bool Parser::buildFunctions()
