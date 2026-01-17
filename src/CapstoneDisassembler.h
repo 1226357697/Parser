@@ -1,5 +1,7 @@
 #pragma once
 #include "disassembler.h"
+#include "OperandDecoder.h"
+#include <memory>
 #include <capstone/capstone.h>
 #include <stdexcept>
 
@@ -19,4 +21,5 @@ public:
 private:
   csh handle_;
 
+  std::unique_ptr<OperandDecoder> decoder_;
 };

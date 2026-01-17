@@ -15,9 +15,4 @@ public:
   bool isNop(const Instruction& insn) const override;
   bool isInterrupt(const Instruction& insn) const override;
   bool affectsControlFlow(const Instruction& insn) const override;
-
-private:
-  std::optional<uint64_t> parseAddress(const std::string& op) const;
-  bool isNopLea(const Instruction& insn) const;
-
 };

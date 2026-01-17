@@ -28,6 +28,12 @@ set(
     X86InstructionAnalyzer.cpp
     CrossReference.h
     CrossReference.cpp
+    Operand.h
+    Operand.cpp
+    OperandDecoder.h
+    OperandDecoder.cpp
+    X86OperandDecoder.h
+    X86OperandDecoder.cpp
     main.cpp
 )
 

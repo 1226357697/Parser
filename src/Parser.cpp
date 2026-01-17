@@ -21,14 +21,15 @@ bool Parser::parseFunctions()
   exploreBuildBlock(entrances);
 
 
-  printf("==============================================================\n");
+ /* printf("==============================================================\n");
   for (auto& [rva, block]:blocks_)
   {
     if (block->tag() == BasicBlock::Tag::kFunctionEntry)
     {
       printf("va: %08X \n", rva + bin_.imageBase());
     }
-  }
+  }*/
+
   buildFunctions();
 
 
@@ -74,7 +75,7 @@ bool Parser::exportFunctionToDot(RVA_t rva, const std::string& fileName)
 
     // 块内指令
     for (const auto& insn : block->instructions()) {
-      std::string instString = insn->mnemonic + "\t" + insn->operands;
+      std::string instString = insn->mnemonic + "\t" + insn->operandsStr;
       ss << hex(insn->address) << ": " << escape(instString) << "\\l";
     }
 
@@ -370,9 +371,9 @@ void Parser::exploreBlocks(const Entrance& entrance, std::set<Entrance>& explore
       auto inst_ptr = std::make_shared<Instruction>(std::move(*inst));
       block->addInstruction(inst_ptr);
 
-      std::cout
-        << std::format("{:08X} {}\t{}", inst_ptr->address + bin_.imageBase(), inst_ptr->mnemonic, inst_ptr->operands)
-        << std::endl;
+      //std::cout
+      //  << std::format("{:08X} {}\t{}", inst_ptr->address + bin_.imageBase(), inst_ptr->mnemonic, inst_ptr->operands)
+      //  << std::endl;
 
 
       if (analyzer->isConditionalJump(*inst_ptr))
@@ -400,6 +401,9 @@ void Parser::exploreBlocks(const Entrance& entrance, std::set<Entrance>& explore
       {
         if (analyzer->isIndirectJump(*inst_ptr))
         {
+          std::cout
+          << std::format("IndirectJump {:08X} {}\t{}", inst_ptr->address + bin_.imageBase(), inst_ptr->mnemonic, inst_ptr->operandsStr)
+          << std::endl;
           block->setEndType(BasicBlock::EndType::kIndirectJump);
         }
         else
@@ -465,7 +469,7 @@ void Parser::exploreBlocks(const Entrance& entrance, std::set<Entrance>& explore
       }
     }
 
-    std::cout << "---------------------------------------------------" << std::endl;
+    //std::cout << "---------------------------------------------------" << std::endl;
   }
 }
 

@@ -1,50 +1,37 @@
 #include "X86InstructionAnalyzer.h"
-#include <unordered_set>
+#include <capstone/x86.h>
 
 bool X86InstructionAnalyzer::isReturn(const Instruction& insn) const
 {
-  return insn.mnemonic == "ret" ||
-    insn.mnemonic == "retn" ||
-    insn.mnemonic == "retf";
+  return insn.hasGroup(Instruction::Group::Ret);
 }
 
 bool X86InstructionAnalyzer::isCall(const Instruction& insn) const
 {
-  return insn.mnemonic == "call";
+  return insn.hasGroup(Instruction::Group::Call);
 }
 
 bool X86InstructionAnalyzer::isUnconditionalJump(const Instruction& insn) const
 {
-  return insn.mnemonic == "jmp";
+  return insn.opCode == X86_INS_JMP;
 }
 
 bool X86InstructionAnalyzer::isConditionalJump(const Instruction& insn) const
 {
-  const auto& m = insn.mnemonic;
-  if (m.empty() || m[0] != 'j') return false;
-  if (m == "jmp") return false;
-
-  // je, jne, jl, jle, jg, jge, jb, jbe, ja, jae, js, jns, jo, jno...
-  static const std::unordered_set<std::string> jcc = {
-      "je", "jz", "jne", "jnz", "jl", "jnge", "jle", "jng",
-      "jg", "jnle", "jge", "jnl", "jb", "jnae", "jc", "jbe", "jna",
-      "ja", "jnbe", "jae", "jnb", "jnc", "js", "jns", "jo", "jno",
-      "jp", "jpe", "jnp", "jpo", "jcxz", "jecxz", "jrcxz",
-      "loop", "loope", "loopz", "loopne", "loopnz"
-  };
-  return jcc.count(m) > 0;
+  // æœ‰ Jump ç»„ä½†ä¸æ˜¯ JMP æŒ‡ä»¤
+  return insn.hasGroup(Instruction::Group::Jump) &&
+         insn.opCode != X86_INS_JMP;
 }
 
 bool X86InstructionAnalyzer::isIndirectJump(const Instruction& insn) const
 {
-  if (insn.mnemonic != "jmp") return false;
+  if (insn.opCode != X86_INS_JMP) return false;
 
-  const auto& op = insn.operands;
-  // jmp rax, jmp [rax], jmp qword ptr [rax+rcx*8]
-  // Ö±½ÓÌø×ªÊÇ jmp 0x1234
+  // æ£€æŸ¥æ“ä½œæ•°ï¼šå¦‚æœæ˜¯å¯„å­˜å™¨æˆ–å†…å­˜æ“ä½œæ•°ï¼Œåˆ™ä¸ºé—´æ¥è·³è½¬
+  if (insn.operands.empty()) return false;
 
-  // ¼òµ¥ÅĞ¶Ï£º²»ÊÇ´¿Êı×Ö¾ÍÊÇ¼ä½Ó
-  return !op.empty() && !std::isdigit(op[0]) && op[0] != '0';
+  const auto& op = insn.operands[0];
+  return op.isReg() || op.isMem();
 }
 
 std::optional<uint64_t> X86InstructionAnalyzer::getJumpTarget(const Instruction& insn) const
@@ -54,38 +41,68 @@ std::optional<uint64_t> X86InstructionAnalyzer::getJumpTarget(const Instruction&
   }
 
   if (isIndirectJump(insn)) {
-    return std::nullopt;  // ÎŞ·¨¾²Ì¬È·¶¨
+    return std::nullopt;  // æ— æ³•é™æ€ç¡®å®š
   }
 
-  return parseAddress(insn.operands);
+  // ç›´æ¥è·³è½¬ï¼šæ“ä½œæ•°æ˜¯ç«‹å³æ•°
+  if (!insn.operands.empty() && insn.operands[0].isImm()) {
+    return static_cast<uint64_t>(insn.operands[0].imm().value);
+  }
+
+  return std::nullopt;
 }
 
 std::optional<uint64_t> X86InstructionAnalyzer::getCallTarget(const Instruction& insn) const
 {
   if (!isCall(insn)) return std::nullopt;
 
-  // ¼ä½Óµ÷ÓÃ: call rax, call [rax]
-  const auto& op = insn.operands;
-  if (!op.empty() && !std::isdigit(op[0]) && op[0] != '0') {
-    return std::nullopt;
+  // é—´æ¥è°ƒç”¨: call rax, call [rax]
+  if (!insn.operands.empty()) {
+    const auto& op = insn.operands[0];
+    if (op.isReg() || op.isMem()) {
+      return std::nullopt;
+    }
+    if (op.isImm()) {
+      return static_cast<uint64_t>(op.imm().value);
+    }
   }
 
-  return parseAddress(op);
+  return std::nullopt;
 }
 
 bool X86InstructionAnalyzer::isNop(const Instruction& insn) const
 {
-  return insn.mnemonic == "nop" ||
-    (insn.mnemonic == "xchg" && insn.operands == "eax, eax") ||
-    (insn.mnemonic == "lea" && isNopLea(insn));
+  if (insn.opCode == X86_INS_NOP) return true;
+
+  // xchg eax, eax ä¹Ÿæ˜¯ NOP
+  if (insn.opCode == X86_INS_XCHG && insn.operands.size() == 2) {
+    const auto& op0 = insn.operands[0];
+    const auto& op1 = insn.operands[1];
+    if (op0.isReg() && op1.isReg() && op0.reg().reg == op1.reg().reg) {
+      return true;
+    }
+  }
+
+  // lea rax, [rax + 0] ä¹Ÿæ˜¯ NOP
+  if (insn.opCode == X86_INS_LEA && insn.operands.size() == 2) {
+    const auto& dst = insn.operands[0];
+    const auto& src = insn.operands[1];
+    if (dst.isReg() && src.isMem()) {
+      const auto& mem = src.mem();
+      // lea reg, [reg + 0] ä¸”æ²¡æœ‰ index
+      if (mem.hasBase() && !mem.hasIndex() && mem.disp == 0 &&
+          dst.reg().reg == mem.base) {
+        return true;
+      }
+    }
+  }
+
+  return false;
 }
 
 bool X86InstructionAnalyzer::isInterrupt(const Instruction& insn) const
 {
-  return insn.mnemonic == "int" ||
-    insn.mnemonic == "int3" ||
-    insn.mnemonic == "syscall" ||
-    insn.mnemonic == "sysenter";
+  return insn.hasGroup(Instruction::Group::Interrupt);
 }
 
 bool X86InstructionAnalyzer::affectsControlFlow(const Instruction& insn) const
@@ -94,21 +111,6 @@ bool X86InstructionAnalyzer::affectsControlFlow(const Instruction& insn) const
     isUnconditionalJump(insn) || isConditionalJump(insn) ||
     isInterrupt(insn);
 }
-std::optional<uint64_t> X86InstructionAnalyzer::parseAddress(const std::string& op) const {
-  try {
-    return std::stoull(op, nullptr, 0);
-  }
-  catch (...) {
-    return std::nullopt;
-  }
-}
-
-bool X86InstructionAnalyzer::isNopLea(const Instruction& insn) const {
-  // lea rax, [rax + 0] µÈ NOP ±äÌå
-  return insn.operands.find("[") != std::string::npos &&
-    insn.operands.find("0x0") != std::string::npos;
-}
-
 RVA_t X86InstructionAnalyzer::getNextAddress(const Instruction& insn) const
 {
   return insn.address + insn.size();
