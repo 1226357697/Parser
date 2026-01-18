@@ -36,6 +36,8 @@ set(
     X86OperandDecoder.cpp
     JumpTableAnalyzer.h
     JumpTableAnalyzer.cpp
+    MemoryRegion.h
+    MemoryRegion.cpp
     main.cpp
 )
 

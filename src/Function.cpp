@@ -19,4 +19,18 @@ void Function::addBlock(std::shared_ptr<BasicBlock> block)
   blocks_.insert({(RVA_t)block->startAddress(), block });
 }
 
+size_t Function::getFunctionSize() const
+{
+  auto it = blocks_.rbegin();
+  if (it != blocks_.rend()) {
+    RVA_t maxRva = it->first;
+    std::shared_ptr<BasicBlock> block = it->second;
+    auto lastInst = block->instructions().back();
+    return lastInst->address + lastInst->size();
+  }
+
+  assert(false);
+  return 0;
+}
+
 

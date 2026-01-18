@@ -11,6 +11,17 @@ namespace fs = std::filesystem;
 Parser::Parser(BinaryModule& bin)
 :bin_(bin)
 {
+  for (auto& section : bin_.getSections())
+  {
+    if (bin_.isCodeSection(&section))
+    {
+      MemoryRegion region(MemoryRegion::Protect::Execute, section.virtual_address(), section.virtual_address() + section.size());
+
+      codeRegion_.push_back(region);
+
+    }
+
+  }
 }
 
 bool Parser::parseFunctions()
@@ -22,6 +33,17 @@ bool Parser::parseFunctions()
   mergeParseBlockAndFunction();
 
   rebuildFunctionsByPredict();
+
+
+  // 开始参测未知区域
+
+
+
+  printFunction();
+  rebuildFunctionsByUnExplore();
+  printFunction();
+
+  printSummary();
 
 
 
@@ -168,6 +190,10 @@ bool Parser::buildFunctions()
 
 void Parser::buildFunctionCFG(std::shared_ptr<Function> function)
 {
+  if (function->rva() == 0x77ba)
+  {
+    int j =0;
+  }
   std::set<RVA_t> visited;
   std::stack<RVA_t> workLists;
 
@@ -197,6 +223,12 @@ void Parser::buildFunctionCFG(std::shared_ptr<Function> function)
 
     BasicBlock::EndType endType = block->endType();
     auto& insts = block->instructions();
+    if (insts.empty())
+    {
+      // todo
+      continue;
+    }
+
     if (endType == BasicBlock::EndType::kConditionalJump)
     {
       auto inst = insts.back();
@@ -272,7 +304,8 @@ void Parser::buildFunctionCFG(std::shared_ptr<Function> function)
     }
     else
     {
-      assert(false);
+      // todo
+      //assert(false);
     }
 
   }
@@ -323,6 +356,11 @@ void Parser::exploreBlocks(const Entrance& entrance, std::set<Entrance>& explore
   {
     // explored
     return;
+  }
+
+  if (entrance.rva == 0xabe0)
+  {
+    int k =0;
   }
 
   std::set<RVA_t> leaders;
@@ -410,6 +448,8 @@ void Parser::exploreBlocks(const Entrance& entrance, std::set<Entrance>& explore
           // add xref
           addXref({ .from = currentRva, .to = (RVA_t)target.value(), .type = XrefType::kJmp });
 
+          // 可能是函数调用
+
           workLists.push(target.value());
         }
 
@@ -452,6 +492,12 @@ void Parser::exploreBlocks(const Entrance& entrance, std::set<Entrance>& explore
 
       // 检查是否进入了已有块的中间（需要分割）
       if (auto existing = findBlockContaining(currentRva)) {
+        if (existing->startAddress() == currentRva && existing->tag() == BasicBlock::Tag::kFunctionEntry)
+        {
+          // todo 分析到其他入口块了
+          break;
+        }
+
         auto newBlock = existing->splitAt(currentRva);
         parseingBlocks_[currentRva] = newBlock;
         leaders.insert(currentRva);
@@ -463,6 +509,28 @@ void Parser::exploreBlocks(const Entrance& entrance, std::set<Entrance>& explore
     //std::cout << "---------------------------------------------------" << std::endl;
   }
 
+}
+
+void Parser::rebuildFunctionsByUnExplore()
+{
+  MemoryRegion& code = codeRegion_.at(0);
+
+  do
+  {
+    if(code.freeBlock().empty())
+      break;
+
+    std::set<Entrance> entrances;
+    for (auto& b : code.freeBlock())
+    {
+      Entrance entrace{ .type = EntranceType::kFunction, .rva = b.start };
+      entrances.insert(entrace);
+    }
+
+    parseBlockAndFunction(entrances);
+    mergeParseBlockAndFunction();
+
+  } while (true);
 }
 
 
@@ -488,6 +556,14 @@ void Parser::parseBlockAndFunction(const std::set<Entrance>& entrance)
 {
   // explore blocks
   exploreBuildBlock(entrance);
+
+  for (auto&[rva, bb]:parseingBlocks_)
+  {
+    if (bb->endType() ==BasicBlock::EndType::kInvalid)
+    {
+      bb->setTag(BasicBlock::Tag::kNone);
+    }
+  }
 
   buildFunctions();
 
@@ -549,6 +625,12 @@ void Parser::rebuildFunctionByPredict(Function& func)
 void Parser::mergeParseBlockAndFunction()
 {
 
+  MemoryRegion& code = codeRegion_.at(0);
+  for (auto& [rva, func] : parseingFunctions_)
+  {
+    code.allocate(func->rva(), func->getFunctionSize());
+  }
+
   blocks_.merge(parseingBlocks_);
   functions_.merge(parseingFunctions_);
 }
@@ -569,6 +651,10 @@ std::shared_ptr<BasicBlock> Parser::getBlock(RVA_t addr)
 
 std::shared_ptr<BasicBlock> Parser::getOrCreateBlock(RVA_t addr, bool* isNew)
 {
+  if (addr == 0xabe0)
+  {
+    int j = 0;
+  }
   if(isNew) *isNew = false;
 
   // 已存在
@@ -628,5 +714,32 @@ uint32_t Parser::GetGasSize(RVA_t rva)
     currentRva += inst->size();
   }
   return gasSize;
+}
+
+void Parser::printSummary()
+{
+  printFunction();
+  printUnParseCodeRegion();
+}
+
+void Parser::printFunction()
+{
+  printf("------------------------------- functions ------------------------------- \n");
+  for (auto& [rva, func]: functions_)
+  {
+    printf("function rva:%08X blocks:%d\n", func->rva(), func->blocks().size());
+  }
+  printf("=============================== functions =============================== \n\n");
+}
+
+void Parser::printUnParseCodeRegion()
+{
+  printf("------------------------------- Un Parse CodeRegion ------------------------------- \n");
+  MemoryRegion& code = codeRegion_.at(0);
+  for (auto& b : code.freeBlock())
+  {
+    printf("unparse region start:%08X end:%08X\n", b.start, b.end);
+  }
+  printf("=============================== Un Parse CodeRegion =============================== \n\n");
 }
 

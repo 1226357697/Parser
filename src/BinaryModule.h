@@ -5,7 +5,6 @@
 
 #include <LIEF/LIEF.hpp>
 #include "BinaryTypes.h"
-//#include "Function.h"
 #include "CrossReference.h"
 #include "Architecture.h"
 #include "InstructionAnalyzer.h"
@@ -61,6 +60,10 @@ public:
   virtual bool inCodeSegment(RVA_t rva);
 
   virtual uint32_t getPointerSize();
+
+  bool isCodeSection(LIEF::Section* section);
+
+  LIEF::Binary::it_sections getSections()const;
 protected:
 
   virtual bool doLoad(const std::string& path) = 0;

@@ -5,6 +5,7 @@
 #include <map>
 #include "Function.h"
 #include "CrossReference.h"
+#include "MemoryRegion.h"
 
 enum EntranceType : uint32_t
 {
@@ -42,6 +43,7 @@ protected:
   void insertIndirectCFG(std::shared_ptr<BasicBlock> mainBb, std::shared_ptr<BasicBlock> bb);
   void exploreBuildBlock(const std::set<Entrance>& entrance);
   void exploreBlocks(const Entrance& entrance, std::set<Entrance>& exploreCall);
+  void rebuildFunctionsByUnExplore();
   void rebuildFunctionsByPredict();
   void rebuildFunctionByPredict(Function& func);
   void mergeParseBlockAndFunction();
@@ -53,6 +55,12 @@ protected:
   uint32_t GetGasSize(RVA_t rva);
 
   inline void addXref(const Xref& xref) { xrefManager_ .addXref( xref); };
+
+  // 打印相关信息
+  void printSummary();
+  void printFunction();
+  void printUnParseCodeRegion();
+
 private:
   BinaryModule& bin_;
   std::map<RVA_t, std::shared_ptr<BasicBlock>> blocks_;
@@ -63,5 +71,6 @@ private:
   std::map<RVA_t, std::shared_ptr<Function>> parseingFunctions_;
 
 
+  std::vector<MemoryRegion> codeRegion_;
   XrefManager xrefManager_;
 };

@@ -134,15 +134,25 @@ bool BinaryModule::inCodeSegment(RVA_t rva)
   if (!section)
     return false;
 
-  auto* peSection = dynamic_cast<LIEF::PE::Section*>(section);
-  if (!peSection)
-    return false;
-
-  return (peSection->characteristics() &
-    static_cast<uint32_t>(LIEF::PE::Section::CHARACTERISTICS::MEM_EXECUTE)) != 0;
+  return isCodeSection(section);
 }
 
 uint32_t BinaryModule::getPointerSize()
 {
   return binary_->header().is_32() ? 4 : 8;
+}
+
+bool BinaryModule::isCodeSection(LIEF::Section* section)
+{
+  auto* peSection = dynamic_cast<LIEF::PE::Section*>(section);
+  if (!peSection)
+    return false;
+
+   return (peSection->characteristics() &
+    static_cast<uint32_t>(LIEF::PE::Section::CHARACTERISTICS::MEM_EXECUTE)) != 0;;
+}
+
+LIEF::Binary::it_sections BinaryModule::getSections() const
+{
+    return binary_->sections();
 }
