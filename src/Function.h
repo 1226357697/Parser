@@ -19,7 +19,7 @@ public:
 
 	void addBlock(std::shared_ptr<BasicBlock> block);
 
-	const std::map<RVA_t, std::shared_ptr<BasicBlock>>& blocks() const { return blocks_; }
+	const std::map<RVA_t, std::shared_ptr<BasicBlock>> blocks() const { return blocks_; }
 	size_t blockCount() const { return blocks_.size(); }
 protected:
 

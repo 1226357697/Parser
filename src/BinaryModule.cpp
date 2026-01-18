@@ -88,7 +88,61 @@ std::vector<uint8_t> BinaryModule::readBytes(RVA_t rva, size_t size)
   return std::vector<uint8_t>(bytyes.begin(), bytyes.end());
 }
 
+std::optional<Addr_t> BinaryModule::readPointer(RVA_t rva)
+{
+  auto bytes = readBytes(rva, getPointerSize());
+  if(bytes.empty())
+    return std::nullopt;
+
+
+  Addr_t v =0;
+  if(getPointerSize() == 4)
+    v = *(uint32_t*)bytes.data();
+  else
+    v = *(uint64_t*)bytes.data();
+    
+  return v;
+}
+
 RVA_t BinaryModule::VA2RVA(uint64_t address)
 {
     return (RVA_t)(address - binary_->imagebase());
+}
+
+LIEF::Section* BinaryModule::getSectionByRva(uint64_t rva) const {
+  for (LIEF::Section& section : binary_->sections()) {
+    uint64_t start = section.virtual_address();
+    uint64_t end = start + section.size();
+
+    if (rva >= start && rva < end) {
+      return &section;
+    }
+  }
+  return nullptr;
+}
+
+bool BinaryModule::validAddress(RVA_t rva)
+{
+  LIEF::Section* section = getSectionByRva(rva);
+
+  return section;
+}
+
+bool BinaryModule::inCodeSegment(RVA_t rva)
+{
+  LIEF::Section* section = getSectionByRva(rva);
+  if (!section)
+    return false;
+
+  auto* peSection = dynamic_cast<LIEF::PE::Section*>(section);
+  if (!peSection)
+    return false;
+
+  return (peSection->characteristics() &
+    static_cast<uint32_t>(LIEF::PE::Section::CHARACTERISTICS::MEM_EXECUTE)) != 0;
+}
+
+uint32_t BinaryModule::getPointerSize()
+{
+  return binary_->header().is_32() ? 4 : 8;
 }

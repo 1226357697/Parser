@@ -4,6 +4,7 @@
 #include <format>
 #include <iostream>
 #include <filesystem>
+#include"JumpTableAnalyzer.h"
 
 namespace fs = std::filesystem;
 
@@ -17,20 +18,11 @@ bool Parser::parseFunctions()
   // collect entrances
   std::set<Entrance> entrances = collectModuleEntrance();
 
-  // explore blocks
-  exploreBuildBlock(entrances);
+  parseBlockAndFunction(entrances);
+  mergeParseBlockAndFunction();
 
+  rebuildFunctionsByPredict();
 
- /* printf("==============================================================\n");
-  for (auto& [rva, block]:blocks_)
-  {
-    if (block->tag() == BasicBlock::Tag::kFunctionEntry)
-    {
-      printf("va: %08X \n", rva + bin_.imageBase());
-    }
-  }*/
-
-  buildFunctions();
 
 
   return true;
@@ -159,14 +151,14 @@ void Parser::exportFuncrionsToDot(const std::string& dirName)
 
 bool Parser::buildFunctions()
 {
-  for (auto& [rva, block] : blocks_)
+  for (auto& [rva, block] : parseingBlocks_)
   {
-    if (block->tag() == BasicBlock::Tag::kFunctionEntry)
+    if (parseingFunctions_.find(rva) == parseingFunctions_.end() &&   block->tag() == BasicBlock::Tag::kFunctionEntry)
     {
       std::shared_ptr<Function> function = std::make_shared<Function>(bin_, rva, block);
       buildFunctionCFG(function);
 
-      functions_.emplace(rva, function);
+      parseingFunctions_.emplace(rva, function);
     }
   }
 
@@ -289,6 +281,18 @@ void Parser::buildFunctionCFG(std::shared_ptr<Function> function)
 
 }
 
+void Parser::insertIndirectCFG(std::shared_ptr<BasicBlock> mainBb, std::shared_ptr<BasicBlock> bb)
+{
+  if (mainBb->endType() != BasicBlock::EndType::kIndirectJump)
+  {
+    assert(false);
+    return ;
+  }
+
+  mainBb->addSuccessor(bb);
+  bb->addPredecessor(mainBb);
+}
+
 void Parser::exploreBuildBlock(const std::set<Entrance>& entrance)
 {
   std::set<Entrance> exploreCall;
@@ -310,28 +314,16 @@ void Parser::exploreBuildBlock(const std::set<Entrance>& entrance)
 
   } while (!exploreWork.empty());
 
-  return ;
 }
 
 void Parser::exploreBlocks(const Entrance& entrance, std::set<Entrance>& exploreCall)
 {
-  if (blocks_.find(entrance.rva) != blocks_.end())
+  if (blocks_.find(entrance.rva) != blocks_.end()
+   || parseingBlocks_.find(entrance.rva) != parseingBlocks_.end())
   {
     // explored
     return;
   }
-
-  //if (entrance.type == EntranceType::kMaybeGap)
-  //{
-  //  uint32_t gasSize = GetGasSize(entrance.rva);
-  //  if (gasSize > 0)
-  //  {
-  //    exploreCall.insert(Entrance{ EntranceType::kFunction, entrance.rva + gasSize });
-
-  //    std::shared_ptr<BasicBlock> block = getOrCreateBlock(entrance.rva);
-  //    return;
-  //  }
-  //}
 
   std::set<RVA_t> leaders;
   std::set<RVA_t> visited;
@@ -447,7 +439,6 @@ void Parser::exploreBlocks(const Entrance& entrance, std::set<Entrance>& explore
         block->setEndType(BasicBlock::EndType::kReturn);
 
 
-        //exploreCall.insert(Entrance{ EntranceType::kMaybeGap, analyzer->getNextAddress(*inst_ptr)});
         break;
       }
       currentRva += inst_ptr->size();
@@ -462,7 +453,7 @@ void Parser::exploreBlocks(const Entrance& entrance, std::set<Entrance>& explore
       // 检查是否进入了已有块的中间（需要分割）
       if (auto existing = findBlockContaining(currentRva)) {
         auto newBlock = existing->splitAt(currentRva);
-        blocks_[currentRva] = newBlock;
+        parseingBlocks_[currentRva] = newBlock;
         leaders.insert(currentRva);
         block->setEndType(BasicBlock::EndType::kFallThrough);
         break;
@@ -471,6 +462,7 @@ void Parser::exploreBlocks(const Entrance& entrance, std::set<Entrance>& explore
 
     //std::cout << "---------------------------------------------------" << std::endl;
   }
+
 }
 
 
@@ -492,10 +484,84 @@ std::set<Entrance> Parser::collectModuleEntrance()
   return entrance;
 }
 
+void Parser::parseBlockAndFunction(const std::set<Entrance>& entrance)
+{
+  // explore blocks
+  exploreBuildBlock(entrance);
+
+  buildFunctions();
+
+}
+
+void Parser::rebuildFunctionsByPredict()
+{
+  for(auto& [rva, func] : functions_)
+  {
+    rebuildFunctionByPredict(*func);
+  }
+
+}
+
+void Parser::rebuildFunctionByPredict(Function& func)
+{
+  JumpTableAnalyzer jtAnalyzer(bin_);
+  std::stack<RVA_t> toReparseBlocks;
+  for (auto& [rva, bb] : func.blocks())
+  {
+    toReparseBlocks.push(rva);
+  }
+
+  while (!toReparseBlocks.empty())
+  {
+    RVA_t rva = toReparseBlocks.top();
+    toReparseBlocks.pop();
+
+    auto bb =  blocks_.at(rva);
+
+    auto jtInfo = jtAnalyzer.analyze(*bb);
+
+    if (jtInfo && !jtInfo->cases.empty())
+    {
+      std::set<Entrance> entrance;
+      for (Addr_t va : jtInfo->cases)
+      {
+        entrance.insert({ EntranceType::kBlock, bin_.VA2RVA(va) });
+        toReparseBlocks.push(bin_.VA2RVA(va));
+      }
+
+      parseBlockAndFunction(entrance);
+
+      // 更新间接跳转的CFG
+      bb->addFlags(BasicBlock::Flags::kJumpTable);
+      for (auto& [rva, casebb] : parseingBlocks_)
+      {
+        insertIndirectCFG(bb, casebb);
+      }
+
+      mergeParseBlockAndFunction();
+    }
+
+    bb->setFlags(BasicBlock::Flags::kParseFinish);
+  }
+
+}
+
+void Parser::mergeParseBlockAndFunction()
+{
+
+  blocks_.merge(parseingBlocks_);
+  functions_.merge(parseingFunctions_);
+}
+
+
+
 
 std::shared_ptr<BasicBlock> Parser::getBlock(RVA_t addr)
 {
   if (auto iter = blocks_.find(addr); iter != blocks_.end())
+    return iter->second;
+
+  if (auto iter = parseingBlocks_.find(addr); iter != parseingBlocks_.end())
     return iter->second;
 
   return nullptr;
@@ -515,13 +581,13 @@ std::shared_ptr<BasicBlock> Parser::getOrCreateBlock(RVA_t addr, bool* isNew)
   // 检查是否在已有块中间
   if (auto existing = findBlockContaining(addr)) {
     auto newBlock = existing->splitAt(addr);
-    blocks_[addr] = newBlock;
+    parseingBlocks_[addr] = newBlock;
     return newBlock;
   }
 
   // 创建新块
   auto block = std::make_shared<BasicBlock>(addr);
-  blocks_[addr] = block;
+  parseingBlocks_[addr] = block;
   return block;
 }
 
@@ -529,7 +595,11 @@ std::shared_ptr<BasicBlock> Parser::findBlockContaining(RVA_t rva)
 {
   auto iter = blocks_.upper_bound(rva);
   if (iter == blocks_.begin())
-    return nullptr;
+  {
+    iter = parseingBlocks_.upper_bound(rva);
+    if (iter == parseingBlocks_.begin())
+      return nullptr;
+  }
 
   --iter;
   if (rva >= iter->second->startAddress() && rva < iter->second->endAddress())

@@ -50,8 +50,17 @@ public:
 
   virtual std::vector<uint8_t> readBytes(RVA_t rva, size_t size);
 
+  virtual std::optional<Addr_t> readPointer(RVA_t rva);
+
   virtual RVA_t VA2RVA(uint64_t address);
 
+  LIEF::Section* getSectionByRva(uint64_t rva) const;
+
+  virtual bool validAddress(RVA_t rva);
+
+  virtual bool inCodeSegment(RVA_t rva);
+
+  virtual uint32_t getPointerSize();
 protected:
 
   virtual bool doLoad(const std::string& path) = 0;

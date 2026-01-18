@@ -5,7 +5,8 @@ BasicBlock::BasicBlock(RVA_t rva)
 :startAddress_(rva)
 , endAddress_(rva)         
 , tag_(Tag::kNone)          
-, endType_(EndType::kInvalid) 
+, endType_(EndType::kInvalid)
+, flags_(Flags::kNone)
 {
 }
 

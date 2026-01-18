@@ -34,6 +34,8 @@ set(
     OperandDecoder.cpp
     X86OperandDecoder.h
     X86OperandDecoder.cpp
+    JumpTableAnalyzer.h
+    JumpTableAnalyzer.cpp
     main.cpp
 )
 

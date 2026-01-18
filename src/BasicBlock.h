@@ -32,6 +32,13 @@ public:
 		kFinally,
 	};
 
+	enum class Flags:uint32_t
+	{
+		kNone = 0,
+		kParseFinish = 1 << 0,
+		kJumpTable = 1 << 1,
+	};
+
 public:
 	BasicBlock(RVA_t rva);
 
@@ -42,12 +49,16 @@ public:
 	void addPredecessor(std::shared_ptr<BasicBlock> bb);
 	inline void setEndType(EndType endType) { endType_ = endType; }
 	inline void setTag(Tag tag) { tag_  = tag;}
+	inline void setFlags(Flags flag) { flags_ = flag; }
+	inline void addFlags(Flags flag) { flags_ = (Flags)((uint32_t)flags_ | (uint32_t)flag); }
+	inline bool hasFlags(Flags flag) { return ((uint32_t)flags_ & (uint32_t)flag) != 0; }
 
 	inline RVA_t startAddress() const { return startAddress_;};
 	RVA_t endAddress() const { return endAddress_;}
 	size_t getSize();
 	inline EndType endType() { return endType_; };
 	inline Tag tag()const { return tag_;}
+	inline Flags flags() { return flags_;}
 	inline const std::vector<std::shared_ptr<Instruction>>& instructions(){ return instructions_;}
 
 	std::vector<std::shared_ptr<BasicBlock>> getSuccessors() const;
@@ -58,6 +69,7 @@ private:
 	RVA_t startAddress_;
 	RVA_t endAddress_;
 	Tag tag_;
+	Flags flags_;
 	EndType endType_;
 	std::vector<std::shared_ptr<Instruction>> instructions_;
 
