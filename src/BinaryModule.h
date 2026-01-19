@@ -45,7 +45,7 @@ public:
 
   virtual std::optional<Instruction> disassembleOne(uint64_t addr, size_t* outBytesConsumed = nullptr);
 
-  virtual std::unique_ptr<InstructionAnalyzer> instructionAnalyzer();
+  virtual std::unique_ptr<InstructionAnalyzer> instructionAnalyzer()const;
 
   virtual std::vector<uint8_t> readBytes(RVA_t rva, size_t size);
 

@@ -24,7 +24,8 @@ int main()
   }
 
   Parser parser(bin);
-  if (!parser.parseFunctions())
+  parser.analyze();
+  //if (!)
   {
     std::cout << "failed to parse functions " << std::endl;
     return 1;

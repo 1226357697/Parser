@@ -38,6 +38,8 @@ set(
     JumpTableAnalyzer.cpp
     MemoryRegion.h
     MemoryRegion.cpp
+    DotFileGenerator.h
+    DotFileGenerator.cpp
     main.cpp
 )
 

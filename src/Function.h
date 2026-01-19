@@ -21,7 +21,7 @@ public:
 
 	const std::map<RVA_t, std::shared_ptr<BasicBlock>> blocks() const { return blocks_; }
 	size_t blockCount() const { return blocks_.size(); }
-	size_t getFunctionSize() const;
+	size_t end() const;
 protected:
 
 

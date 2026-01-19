@@ -6,636 +6,257 @@
 #include <filesystem>
 #include"JumpTableAnalyzer.h"
 
-namespace fs = std::filesystem;
 
 Parser::Parser(BinaryModule& bin)
 :bin_(bin)
 {
+
+}
+
+void Parser::analyze()
+{
+  // 1. 收集确定入口
+  collectEntryPoints();
+
+  // 2. 探索所有函数（包括 call 发现的）
+  while (!pendingEntry_.empty()) {
+    RVA_t entry = pendingEntry_.front();
+    pendingEntry_.pop();
+
+    if (visitedNode_.count(entry)) continue;
+
+    exploreBlock(entry, true);
+  }
+  // 3. 分析跳转表，可能发现新块
+  analyzeJumpTables();
+
+  // 4. 构建函数
+  buildFunctions();
+
+  // 5. 扫描未探索的代码区域
+  exploreCodeRegion();
+
+}
+
+void Parser::exploreBlock(RVA_t entry, bool isFunctionEntry )
+{
+  if(isFunctionEntry)
+    functionEntries_.insert(entry);
+
+  std::stack<RVA_t> workList;
+  workList.push(entry);
+
+  while (!workList.empty()) {
+    RVA_t rva = workList.top();
+    workList.pop();
+
+    if (visitedNode_.count(rva)) continue;
+    visitedNode_.insert(rva);
+
+    auto block = getOrCreateBlock(rva);
+    if (isFunctionEntry && rva == entry)
+    {
+      block->setTag(BasicBlock::Tag::kFunctionEntry);
+    }
+
+    disassembleBlock(block, workList);
+  }
+}
+
+void Parser::disassembleBlock(std::shared_ptr<BasicBlock> block,
+  std::stack<RVA_t>& workList) {
+  RVA_t rva = block->startAddress();
+  auto analyzer = bin_.instructionAnalyzer();
+
+  while (auto inst = bin_.disassembleOne(rva)) {
+    auto instPtr = std::make_shared<Instruction>(std::move(*inst));
+    block->addInstruction(instPtr);
+
+    // 处理控制流
+    if (analyzer->isCall(*instPtr)) {
+      if (auto target = analyzer->getCallTarget(*instPtr)) {
+        pendingEntry_.push(*target);  // 发现新块
+      }
+    }
+
+    if (analyzer->isConditionalJump(*instPtr)) {
+      block->setEndType(BasicBlock::EndType::kConditionalJump);
+
+      if (auto target = analyzer->getJumpTarget(*instPtr)) {
+        workList.push(*target);
+        linkBlocks(block, getOrCreateBlock(*target));
+      }
+
+      RVA_t fall = analyzer->getNextAddress(*instPtr);
+      workList.push(fall);
+      linkBlocks(block, getOrCreateBlock(fall));
+      return;
+    }
+
+    if (analyzer->isUnconditionalJump(*instPtr)) {
+      if (analyzer->isIndirectJump(*instPtr)) {
+        block->setEndType(BasicBlock::EndType::kIndirectJump);
+      }
+      else {
+        block->setEndType(BasicBlock::EndType::kUnconditionalJump);
+        if (auto target = analyzer->getJumpTarget(*instPtr)) {
+          workList.push(*target);
+          linkBlocks(block, getOrCreateBlock(*target));
+        }
+      }
+      return;
+    }
+
+    if (analyzer->isReturn(*instPtr)) {
+      block->setEndType(BasicBlock::EndType::kReturn);
+      return;
+    }
+
+    rva += instPtr->size();
+
+    // 遇到已有块
+    if (visitedNode_.count(rva)) {
+      block->setEndType(BasicBlock::EndType::kFallThrough);
+      linkBlocks(block, getOrCreateBlock(rva));
+      return;
+    }
+  }
+}
+
+void Parser::analyzeJumpTables() {
+  JumpTableAnalyzer jtAnalyzer(bin_);
+
+  // 收集所有间接跳转块
+  std::vector<std::shared_ptr<BasicBlock>> indirectBlocks;
+  for (auto& [rva, block] : blocks_) {
+    if (block->endType() == BasicBlock::EndType::kIndirectJump) {
+      indirectBlocks.push_back(block);
+    }
+  }
+
+  // 分析每个跳转表
+  for (auto& block : indirectBlocks) {
+    if (auto jtInfo = jtAnalyzer.analyze(*block)) {
+      for (Addr_t target : jtInfo->cases) {
+        RVA_t targetRva = bin_.VA2RVA(target);
+
+        // 探索新目标
+        if (!visitedNode_.count(targetRva)) {
+          exploreBlock(targetRva);  // 复用探索逻辑
+        }
+
+        // 链接 CFG
+        if (auto targetBlock = getBlock(targetRva)) {
+          linkBlocks(block, targetBlock);
+        }
+      }
+      block->addFlags(BasicBlock::Flags::kJumpTable);
+    }
+  }
+}
+
+
+
+bool Parser::buildFunctions()
+{
+  for (RVA_t entry : functionEntries_) {
+    if (blocks_.find(entry) == blocks_.end()) {
+      continue;  
+    }
+
+    auto func = std::make_shared<Function>(bin_, entry, blocks_[entry]);
+    collectFunctionBlocks(func);
+    functions_[entry] = func;
+  }
+
+  return true;
+}
+
+void Parser::collectFunctionBlocks(std::shared_ptr<Function> func)
+{
+  std::set<RVA_t> visited;
+  std::stack<std::shared_ptr<BasicBlock>> workList;
+
+  workList.push(func->entryBlock());
+
+  while (!workList.empty()) {
+    auto block = workList.top();
+    workList.pop();
+
+    if (visited.count(block->startAddress())) continue;
+    visited.insert(block->startAddress());
+
+    func->addBlock(block);
+
+    // 添加后继块（但不跨越其他函数入口）
+    for (auto& succ : block->getSuccessors()) {
+      // 如果后继是另一个函数的入口，不加入当前函数
+      if (succ->tag() == BasicBlock::Tag::kFunctionEntry &&
+        succ->startAddress() != func->rva()) {
+        continue;  // 这是 tail call 或跳转到其他函数
+      }
+      workList.push(succ);
+    }
+  }
+
+}
+
+void Parser::exploreCodeRegion()
+{
+  printBlocks();
+  printFunction();
+
+  std::vector<MemoryRegion> unParseCodeRegion;
+
   for (auto& section : bin_.getSections())
   {
     if (bin_.isCodeSection(&section))
     {
       MemoryRegion region(MemoryRegion::Protect::Execute, section.virtual_address(), section.virtual_address() + section.size());
 
-      codeRegion_.push_back(region);
-
+      unParseCodeRegion.push_back(region);
     }
-
   }
+
+  assert(unParseCodeRegion.size() == 1);
+  MemoryRegion& codeRegion = unParseCodeRegion.at(0);
+
+  for (auto& [rva, func ] : functions_)
+  {
+    codeRegion.allocate(func->rva(), func->end());
+  }
+
+  printRemainRegion(codeRegion);
+
+
 }
 
-bool Parser::parseFunctions()
+
+
+void Parser::linkBlocks(std::shared_ptr<BasicBlock> predecessor, std::shared_ptr<BasicBlock> successor)
 {
-  // collect entrances
-  std::set<Entrance> entrances = collectModuleEntrance();
-
-  parseBlockAndFunction(entrances);
-  mergeParseBlockAndFunction();
-
-  rebuildFunctionsByPredict();
-
-
-  // 开始参测未知区域
-
-
-
-  printFunction();
-  rebuildFunctionsByUnExplore();
-  printFunction();
-
-  printSummary();
-
-
-
-  return true;
+  predecessor->addSuccessor(successor);
+  successor->addPredecessor(predecessor);
 }
 
-static std::string hex(uint64_t addr) {
-  std::ostringstream ss;
-  ss << "0x" << std::hex << addr;
-  return ss.str();
-}
-
-static std::string escape(const std::string& s) {
-  std::string out;
-  for (char c : s) {
-    if (c == '"') out += "\\\"";
-    else if (c == '\\') out += "\\\\";
-    else out += c;
-  }
-  return out;
-}
-
-bool Parser::exportFunctionToDot(RVA_t rva, const std::string& fileName)
-{
-  std::ostringstream ss;
-  auto iter = functions_.find(rva);
-  if (iter == functions_.end())
-  {
-    return false;
-  }
-
-  std::shared_ptr<Function> func = iter->second;
-  auto analyzer = bin_.instructionAnalyzer();
-
-  ss << "digraph CFG {\n";
-  ss << "  node [shape=box, fontname=\"Courier\", fontsize=10];\n";
-  ss << "  edge [fontsize=8];\n\n";
-
-  for (auto& [rva, block] : func->blocks())
-  {
-    // 绘制节点
-    ss << "  \"" << hex(block->startAddress()) << "\" [label=\"";
-
-    // 块内指令
-    for (const auto& insn : block->instructions()) {
-      std::string instString = insn->mnemonic + "\t" + insn->operandsStr;
-      ss << hex(insn->address) << ": " << escape(instString) << "\\l";
-    }
-
-    ss << "\"];\n";
-  }
- 
-
-  ss << "\n";
-
-  // 绘制边
-  for (auto& [rva, block] : func->blocks())
-  {
-    std::vector<std::shared_ptr<BasicBlock>> successor = block->getSuccessors();
-    BasicBlock::EndType endType = block->endType();
-
-    for (auto successor : successor)
-    {
-      ss << "  \"" << hex(block->startAddress()) << "\" -> \"" << hex(successor->startAddress()) << "\"";
-      std::shared_ptr<Instruction>backInst =  block->instructions().back();
-      switch (endType) {
-      case BasicBlock::EndType::kConditionalJump:
-      {
-        auto target = analyzer->getJumpTarget(*backInst);
-        auto fall = analyzer->getNextAddress(*backInst);
-        if (target && target.value() == successor->startAddress())
-        {
-          ss << " [color=green, label=\"T\"]";
-        }
-        if (fall == successor->startAddress())
-        {
-          ss << " [color=red, label=\"F\"]";
-        }
-
-        break;
-      }
-      case BasicBlock::EndType::kUnconditionalJump:
-      {
-        auto target = analyzer->getJumpTarget(*backInst);
-        if (target && target.value() == successor->startAddress())
-        {
-          ss << " [color=blue]";
-        }
-        break;
-      }
-
-      default:
-        break;
-      }
-    }
-
-    if(!successor.empty())
-      ss << ";\n";
-  }
-
-
-  ss << "}\n";
-
-  std::ofstream f(fileName);
-  if(!f.is_open())
-    return false;
-
-  f << ss.str();
-  return true;
-}
-
-void Parser::exportFuncrionsToDot(const std::string& dirName)
-{
-  if (!fs::exists(dirName))
-  {
-    fs::create_directories(dirName);
-  }
-
-
-  for (auto& [rva, func] : functions_)
-  {
-    fs::path functionDotFile = fs::path(dirName) ;
-    functionDotFile = functionDotFile  / (hex(rva) + "_cfg.dot");
-    exportFunctionToDot(rva, functionDotFile.string());
-  }
-}
-
-bool Parser::buildFunctions()
-{
-  for (auto& [rva, block] : parseingBlocks_)
-  {
-    if (parseingFunctions_.find(rva) == parseingFunctions_.end() &&   block->tag() == BasicBlock::Tag::kFunctionEntry)
-    {
-      std::shared_ptr<Function> function = std::make_shared<Function>(bin_, rva, block);
-      buildFunctionCFG(function);
-
-      parseingFunctions_.emplace(rva, function);
-    }
-  }
-
-  return true;
-}
-
-
-void Parser::buildFunctionCFG(std::shared_ptr<Function> function)
-{
-  if (function->rva() == 0x77ba)
-  {
-    int j =0;
-  }
-  std::set<RVA_t> visited;
-  std::stack<RVA_t> workLists;
-
-  workLists.push(function->rva());
-
-  auto analyzer = bin_.instructionAnalyzer();
-
-  while (!workLists.empty())
-  {
-    RVA_t blockRva = workLists.top();
-    workLists.pop();
-
-    if (visited.count(blockRva) > 0)
-      continue;
-
-    visited.insert(blockRva);
-
-  
-    std::shared_ptr<BasicBlock>block = getBlock(blockRva);
-    if (!block)
-    {
-      assert(false);
-      continue;
-    }
-
-    function->addBlock(block);
-
-    BasicBlock::EndType endType = block->endType();
-    auto& insts = block->instructions();
-    if (insts.empty())
-    {
-      // todo
-      continue;
-    }
-
-    if (endType == BasicBlock::EndType::kConditionalJump)
-    {
-      auto inst = insts.back();
-      assert(analyzer->isConditionalJump(*inst));
-
-      auto target = analyzer->getJumpTarget(*inst);
-      auto fall = analyzer->getNextAddress(*inst);
-
-      if (target)
-      {
-        std::shared_ptr<BasicBlock>  successor = getBlock(target.value());
-        assert(successor);
-
-        block->addSuccessor(successor);
-        successor->addPredecessor(block);
-
-        workLists.push(successor->startAddress());
-      }
-
-      {
-        std::shared_ptr<BasicBlock>  successor = getBlock(fall);
-        assert(successor);
-
-        block->addSuccessor(successor);
-        successor->addPredecessor(block);
-
-        workLists.push(successor->startAddress());
-      }
-    }
-    else if (endType == BasicBlock::EndType::kUnconditionalJump)
-    {
-      auto inst = insts.back();
-      assert(analyzer->isUnconditionalJump(*inst));
-
-      auto target = analyzer->getJumpTarget(*inst);
-
-      if (target)
-      {
-        std::shared_ptr<BasicBlock>  successor = getBlock(target.value());
-        assert(successor);
-
-        block->addSuccessor(successor);
-        successor->addPredecessor(block);
-
-        workLists.push(successor->startAddress());
-      }
-    }
-    else if (endType == BasicBlock::EndType::kFallThrough)
-    {
-      auto inst = insts.back();
-      auto fall = analyzer->getNextAddress(*inst);
-
-      {
-        std::shared_ptr<BasicBlock>  successor = getBlock(fall);
-        assert(successor);
-
-        block->addSuccessor(successor);
-        successor->addPredecessor(block);
-
-
-        workLists.push(successor->startAddress());
-      }
-
-    }
-    else if (endType == BasicBlock::EndType::kIndirectJump)
-    {
-      // TODO: 跳转表分析后添加后继
-    }
-    // passed
-    else if (endType == BasicBlock::EndType::kReturn)
-    {
-
-    }
-    else
-    {
-      // todo
-      //assert(false);
-    }
-
-  }
-
-
-
-}
-
-void Parser::insertIndirectCFG(std::shared_ptr<BasicBlock> mainBb, std::shared_ptr<BasicBlock> bb)
-{
-  if (mainBb->endType() != BasicBlock::EndType::kIndirectJump)
-  {
-    assert(false);
-    return ;
-  }
-
-  mainBb->addSuccessor(bb);
-  bb->addPredecessor(mainBb);
-}
-
-void Parser::exploreBuildBlock(const std::set<Entrance>& entrance)
-{
-  std::set<Entrance> exploreCall;
-  std::set<Entrance> exploreWork;
-
-  exploreWork.insert(entrance.begin(), entrance.end());
-
-  do
-  {
-    for (const auto& iter : exploreWork)
-    {
-      std::set<Entrance> calls;
-      exploreBlocks(iter, calls);
-      exploreCall.insert(calls.begin(), calls.end());
-    }
-
-    exploreWork = std::move(exploreCall);
-    exploreCall.clear();
-
-  } while (!exploreWork.empty());
-
-}
-
-void Parser::exploreBlocks(const Entrance& entrance, std::set<Entrance>& exploreCall)
-{
-  if (blocks_.find(entrance.rva) != blocks_.end()
-   || parseingBlocks_.find(entrance.rva) != parseingBlocks_.end())
-  {
-    // explored
-    return;
-  }
-
-  if (entrance.rva == 0xabe0)
-  {
-    int k =0;
-  }
-
-  std::set<RVA_t> leaders;
-  std::set<RVA_t> visited;
-  std::stack<RVA_t> workLists;
-
-  leaders.insert(entrance.rva);
-  workLists.push(entrance.rva);
-
-  auto analyzer = bin_.instructionAnalyzer();
-
-  while (!workLists.empty())
-  {
-    RVA_t rva = workLists.top();
-    workLists.pop();
-
-    if (visited.count(rva))
-      continue;
-    visited.insert(rva);
-
-    bool isNewBlock = false;
-    std::shared_ptr<BasicBlock> block = getOrCreateBlock(rva, &isNewBlock);
-    
-    if (isNewBlock)
-    {
-      block->setTag(BasicBlock::Tag::kNormal);
-
-      if (entrance.type == EntranceType::kFunction && rva == entrance.rva)
-      {
-        block->setTag(BasicBlock::Tag::kFunctionEntry);
-      }
-    }
-
-
-    RVA_t currentRva = rva;
-    while (auto inst = bin_.disassembleOne(currentRva))
-    {
-      auto inst_ptr = std::make_shared<Instruction>(std::move(*inst));
-      block->addInstruction(inst_ptr);
-
-      //std::cout
-      //  << std::format("{:08X} {}\t{}", inst_ptr->address + bin_.imageBase(), inst_ptr->mnemonic, inst_ptr->operands)
-      //  << std::endl;
-
-
-      if (analyzer->isConditionalJump(*inst_ptr))
-      {
-        block->setEndType(BasicBlock::EndType::kConditionalJump);
-        auto target = analyzer->getJumpTarget(*inst_ptr);
-        auto fall = analyzer->getNextAddress(*inst_ptr);
-        if (target && leaders.insert(target.value()).second)
-        {
-          // add xref
-          addXref({.from = currentRva, .to = (RVA_t)target.value(), .type = XrefType::kJmp});
-
-          workLists.push(target.value());
-        }
-
-        if (leaders.insert(fall).second)
-        {
-          workLists.push(fall);
-        }
-
-        break;
-      }
-
-      if (analyzer->isUnconditionalJump(*inst_ptr))
-      {
-        if (analyzer->isIndirectJump(*inst_ptr))
-        {
-          std::cout
-          << std::format("IndirectJump {:08X} {}\t{}", inst_ptr->address + bin_.imageBase(), inst_ptr->mnemonic, inst_ptr->operandsStr)
-          << std::endl;
-          block->setEndType(BasicBlock::EndType::kIndirectJump);
-        }
-        else
-        {
-          block->setEndType(BasicBlock::EndType::kUnconditionalJump);
-        }
-
-        auto target = analyzer->getJumpTarget(*inst_ptr);
-
-        if (target && leaders.insert(target.value()).second)
-        {
-          // add xref
-          addXref({ .from = currentRva, .to = (RVA_t)target.value(), .type = XrefType::kJmp });
-
-          // 可能是函数调用
-
-          workLists.push(target.value());
-        }
-
-        break;
-      }
-
-      if(analyzer->isCall(*inst_ptr))
-      {
-        auto target = analyzer->getCallTarget(*inst_ptr);
-        if (target)
-        {
-          // add xref
-          
-          addXref({ .from = currentRva, .to = (RVA_t)target.value() , .type = XrefType::kCall});
-
-          exploreCall.insert(Entrance{ EntranceType ::kFunction, (RVA_t)target.value()});
-        }
-      }
-
-      if (analyzer->isReturn(*inst_ptr))
-      {
-        if (block->tag() == BasicBlock::Tag::kNormal)
-        {
-          block->setTag(BasicBlock::Tag::kFinally);
-        }
-
-        block->setEndType(BasicBlock::EndType::kReturn);
-
-
-        break;
-      }
-      currentRva += inst_ptr->size();
-
-      // 是否到到已有Block
-      if (leaders.count(currentRva))
-      {
-        block->setEndType(BasicBlock::EndType::kFallThrough);
-        break;
-      }
-
-      // 检查是否进入了已有块的中间（需要分割）
-      if (auto existing = findBlockContaining(currentRva)) {
-        if (existing->startAddress() == currentRva && existing->tag() == BasicBlock::Tag::kFunctionEntry)
-        {
-          // todo 分析到其他入口块了
-          break;
-        }
-
-        auto newBlock = existing->splitAt(currentRva);
-        parseingBlocks_[currentRva] = newBlock;
-        leaders.insert(currentRva);
-        block->setEndType(BasicBlock::EndType::kFallThrough);
-        break;
-      }
-    }
-
-    //std::cout << "---------------------------------------------------" << std::endl;
-  }
-
-}
-
-void Parser::rebuildFunctionsByUnExplore()
-{
-  MemoryRegion& code = codeRegion_.at(0);
-
-  do
-  {
-    if(code.freeBlock().empty())
-      break;
-
-    std::set<Entrance> entrances;
-    for (auto& b : code.freeBlock())
-    {
-      Entrance entrace{ .type = EntranceType::kFunction, .rva = b.start };
-      entrances.insert(entrace);
-    }
-
-    parseBlockAndFunction(entrances);
-    mergeParseBlockAndFunction();
-
-  } while (true);
-}
-
-
-
-std::set<Entrance> Parser::collectModuleEntrance()
+std::set<Entrance> Parser::collectEntryPoints()
 {
   std::set<Entrance> entrance;
 
   if (bin_.entryPoint() != 0)
   {
-    entrance.insert({ EntranceType::kFunction, bin_.entryPoint()});
+    //entrance.insert({ EntranceType::kFunction, bin_.entryPoint()});
+    pendingEntry_.push(bin_.entryPoint());
   }
 
   for (auto& item : bin_.exportFunctions())
   {
-    entrance.insert({ EntranceType::kFunction, item.rva});
+    //entrance.insert({ EntranceType::kFunction, item.rva});
+    pendingEntry_.push(item.rva);
   }
 
   return entrance;
 }
-
-void Parser::parseBlockAndFunction(const std::set<Entrance>& entrance)
-{
-  // explore blocks
-  exploreBuildBlock(entrance);
-
-  for (auto&[rva, bb]:parseingBlocks_)
-  {
-    if (bb->endType() ==BasicBlock::EndType::kInvalid)
-    {
-      bb->setTag(BasicBlock::Tag::kNone);
-    }
-  }
-
-  buildFunctions();
-
-}
-
-void Parser::rebuildFunctionsByPredict()
-{
-  for(auto& [rva, func] : functions_)
-  {
-    rebuildFunctionByPredict(*func);
-  }
-
-}
-
-void Parser::rebuildFunctionByPredict(Function& func)
-{
-  JumpTableAnalyzer jtAnalyzer(bin_);
-  std::stack<RVA_t> toReparseBlocks;
-  for (auto& [rva, bb] : func.blocks())
-  {
-    toReparseBlocks.push(rva);
-  }
-
-  while (!toReparseBlocks.empty())
-  {
-    RVA_t rva = toReparseBlocks.top();
-    toReparseBlocks.pop();
-
-    auto bb =  blocks_.at(rva);
-
-    auto jtInfo = jtAnalyzer.analyze(*bb);
-
-    if (jtInfo && !jtInfo->cases.empty())
-    {
-      std::set<Entrance> entrance;
-      for (Addr_t va : jtInfo->cases)
-      {
-        entrance.insert({ EntranceType::kBlock, bin_.VA2RVA(va) });
-        toReparseBlocks.push(bin_.VA2RVA(va));
-      }
-
-      parseBlockAndFunction(entrance);
-
-      // 更新间接跳转的CFG
-      bb->addFlags(BasicBlock::Flags::kJumpTable);
-      for (auto& [rva, casebb] : parseingBlocks_)
-      {
-        insertIndirectCFG(bb, casebb);
-      }
-
-      mergeParseBlockAndFunction();
-    }
-
-    bb->setFlags(BasicBlock::Flags::kParseFinish);
-  }
-
-}
-
-void Parser::mergeParseBlockAndFunction()
-{
-
-  MemoryRegion& code = codeRegion_.at(0);
-  for (auto& [rva, func] : parseingFunctions_)
-  {
-    code.allocate(func->rva(), func->getFunctionSize());
-  }
-
-  blocks_.merge(parseingBlocks_);
-  functions_.merge(parseingFunctions_);
-}
-
-
 
 
 std::shared_ptr<BasicBlock> Parser::getBlock(RVA_t addr)
@@ -643,18 +264,11 @@ std::shared_ptr<BasicBlock> Parser::getBlock(RVA_t addr)
   if (auto iter = blocks_.find(addr); iter != blocks_.end())
     return iter->second;
 
-  if (auto iter = parseingBlocks_.find(addr); iter != parseingBlocks_.end())
-    return iter->second;
-
   return nullptr;
 }
 
 std::shared_ptr<BasicBlock> Parser::getOrCreateBlock(RVA_t addr, bool* isNew)
 {
-  if (addr == 0xabe0)
-  {
-    int j = 0;
-  }
   if(isNew) *isNew = false;
 
   // 已存在
@@ -667,13 +281,15 @@ std::shared_ptr<BasicBlock> Parser::getOrCreateBlock(RVA_t addr, bool* isNew)
   // 检查是否在已有块中间
   if (auto existing = findBlockContaining(addr)) {
     auto newBlock = existing->splitAt(addr);
-    parseingBlocks_[addr] = newBlock;
+    newBlock->setTag(BasicBlock::Tag::kNormal);
+    blocks_[addr] = newBlock;
     return newBlock;
   }
 
   // 创建新块
   auto block = std::make_shared<BasicBlock>(addr);
-  parseingBlocks_[addr] = block;
+  block->setTag(BasicBlock::Tag::kNormal);
+  blocks_[addr] = block;
   return block;
 }
 
@@ -682,8 +298,8 @@ std::shared_ptr<BasicBlock> Parser::findBlockContaining(RVA_t rva)
   auto iter = blocks_.upper_bound(rva);
   if (iter == blocks_.begin())
   {
-    iter = parseingBlocks_.upper_bound(rva);
-    if (iter == parseingBlocks_.begin())
+    iter = blocks_.upper_bound(rva);
+    if (iter == blocks_.begin())
       return nullptr;
   }
 
@@ -719,27 +335,39 @@ uint32_t Parser::GetGasSize(RVA_t rva)
 void Parser::printSummary()
 {
   printFunction();
-  printUnParseCodeRegion();
+  //printRemainRegion();
+}
+
+void Parser::printBlocks()
+{
+  printf("------------------------------- blocks ------------------------------- \n");
+  printf("Count: %llu\n",blocks_.size());
+  for (auto& [rva, bb] : blocks_)
+  {
+    printf("block rva:%08X size:%08x\n", bb->startAddress(), bb->getSize());
+  }
+  printf("===================================================================== \n\n");
 }
 
 void Parser::printFunction()
 {
   printf("------------------------------- functions ------------------------------- \n");
+  printf("Count: %llu\n", functions_.size());
   for (auto& [rva, func]: functions_)
   {
-    printf("function rva:%08X blocks:%d\n", func->rva(), func->blocks().size());
+    printf("function rva:%08X end:%08X blocks:%d\n", func->rva(), func->end(), func->blocks().size());
   }
-  printf("=============================== functions =============================== \n\n");
+  printf("========================================================================= \n\n");
 }
 
-void Parser::printUnParseCodeRegion()
+void Parser::printRemainRegion(const MemoryRegion& region)
 {
   printf("------------------------------- Un Parse CodeRegion ------------------------------- \n");
-  MemoryRegion& code = codeRegion_.at(0);
-  for (auto& b : code.freeBlock())
+  printf("Count: %llu\n", region.freeBlock().size());
+  for (auto& b : region.freeBlock())
   {
     printf("unparse region start:%08X end:%08X\n", b.start, b.end);
   }
-  printf("=============================== Un Parse CodeRegion =============================== \n\n");
+  printf("================================================================================== \n\n");
 }
 

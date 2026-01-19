@@ -76,7 +76,7 @@ std::optional<Instruction> BinaryModule::disassembleOne(uint64_t addr, size_t* o
 
 }
 
-std::unique_ptr<InstructionAnalyzer> BinaryModule::instructionAnalyzer()
+std::unique_ptr<InstructionAnalyzer> BinaryModule::instructionAnalyzer() const
 {
     return arch_->createInstructionAnalzer();
 }

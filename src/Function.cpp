@@ -19,7 +19,7 @@ void Function::addBlock(std::shared_ptr<BasicBlock> block)
   blocks_.insert({(RVA_t)block->startAddress(), block });
 }
 
-size_t Function::getFunctionSize() const
+size_t Function::end() const
 {
   auto it = blocks_.rbegin();
   if (it != blocks_.rend()) {
