@@ -81,10 +81,6 @@ void Parser::analyze()
 
 void Parser::exploreBlock(RVA_t entry, ExploreType entryType, MemoryRegion* region)
 {
-  if (entry == 0x5DB0)
-  {
-    int k=0;
-  }
   if(entryType == ExploreType::Function)
     functionEntries_.insert(entry);
 
@@ -116,10 +112,6 @@ void Parser::disassembleBlock(std::shared_ptr<BasicBlock> block, std::stack<RVA_
   RVA_t rva = block->startAddress();
   auto analyzer = bin_.instructionAnalyzer();
 
-  if (rva == 0x03e2e0e0)
-  {
-    int j =0;
-  }
 
   while (auto inst = bin_.disassembleOne(rva)) {
     auto instPtr = std::make_shared<Instruction>(std::move(*inst));
@@ -228,27 +220,28 @@ bool Parser::buildFunctions()
 void Parser::collectFunctionBlocks(std::shared_ptr<Function> func)
 {
   std::set<RVA_t> visited;
-  std::stack<std::shared_ptr<BasicBlock>> workList;
+  std::stack<RVA_t> workList;  // 只存地址
 
-  workList.push(func->entryBlock());
+  workList.push(func->entryBlock()->startAddress());
 
   while (!workList.empty()) {
-    auto block = workList.top();
+    RVA_t rva = workList.top();
     workList.pop();
 
-    if (visited.count(block->startAddress())) continue;
-    visited.insert(block->startAddress());
+    if (visited.count(rva)) continue;
+    visited.insert(rva);
+
+    auto block = getBlock(rva);
+    if (!block) continue;
 
     func->addBlock(block);
 
-    // 添加后继块（但不跨越其他函数入口）
     for (auto& succ : block->getSuccessors()) {
-      // 如果后继是另一个函数的入口，不加入当前函数
       if (succ->tag() == BasicBlock::Tag::kFunctionEntry &&
         succ->startAddress() != func->rva()) {
-        continue;  // 这是 tail call 或跳转到其他函数
+        continue;
       }
-      workList.push(succ);
+      workList.push(succ->startAddress());
     }
   }
 
@@ -285,10 +278,7 @@ void Parser::exploreCodeRegion()
     // 找到第一个未探索的地址
     RVA_t start = findNextUnexploredAddress(codeRegion);
     if (start == INVALID_RVA) break;
-    if (start == 0x5dd1)
-    {
-      int j =0;
-    }
+
     // 跳过 NOP
     uint32_t gapSize = GetGapSize(start);
     if (gapSize > 0) {
@@ -414,10 +404,6 @@ uint32_t Parser::GetGapSize(RVA_t rva)
   RVA_t currentRva = rva;
   while (true)
   {
-    if (currentRva == 0x14f92)
-    {
-      int  k = 0;
-    }
     if (!bin_.validAddress(currentRva))
     {
       gasSize ++;

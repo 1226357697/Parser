@@ -23,6 +23,12 @@ void BasicBlock::addInstruction(std::shared_ptr<Instruction> inst)
 
 void BasicBlock::addSuccessor(std::shared_ptr<BasicBlock> bb)
 {
+  // 检查是否已存在
+  for (const auto& weak : successors_) {
+    if (auto ptr = weak.lock()) {
+      if (ptr.get() == bb.get()) return;
+    }
+  }
   successors_.push_back(bb);
 }
 

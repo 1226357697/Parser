@@ -46,21 +46,17 @@ std::vector<Addr_t> JumpTableAnalyzer::probeJumpTable(Addr_t tableBase, int dire
 
   for (int i = 0; i < maxEntries; i++) {
     int offset = direction * i * bin_.getPointerSize();
-    Addr_t entryAddr = tableBase + offset;
+    RVA_t entryRva = bin_.VA2RVA(tableBase) + offset;  // 只转换一次
 
-    // 读取跳转表条目
-    auto targetOpt = bin_.readPointer(bin_.VA2RVA(entryAddr));
+    auto targetOpt = bin_.readPointer(entryRva);
     if (!targetOpt) break;
 
-    Addr_t target = *targetOpt;
+    Addr_t targetVA = *targetOpt;
+    RVA_t targetRva = bin_.VA2RVA(targetVA);
 
-    // 验证目标地址
-    if (!bin_.validAddress(bin_.VA2RVA(target))) break;
+    if (!bin_.validAddress(targetRva)) break;
 
-    // 检查是否与已有目标重复太多（可能到达表尾）
-    //if (hasTooManyDuplicates(targets, target)) break;
-
-    targets.push_back(target);
+    targets.push_back(targetVA);
   }
 
   return targets;
