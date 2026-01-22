@@ -9,23 +9,10 @@
 #include "CrossReference.h"
 #include "MemoryRegion.h"
 
-enum EntranceType : uint32_t
-{
-  kNone = 0,
-  kFunction,
-  kBlock,
-  kMaybeGap
-};
-
-struct Entrance
-{
-  EntranceType type;
-  RVA_t rva;
-
-  bool operator<(const Entrance& other) const
-  {
-    return rva < other.rva;
-  }
+enum class ExploreType {
+  Function,  // 函数入口
+  Block,      // 普通块（跳转表目标等）
+  MaybeFunction
 };
 
 class Parser
@@ -34,7 +21,7 @@ public:
   Parser(BinaryModule& bin); 
   void analyze();
 
-  void exploreBlock(RVA_t entry, bool isFunctionEntry = false);
+  void exploreBlock(RVA_t entry, ExploreType entryType = ExploreType::Block, MemoryRegion* region = nullptr);
 
   inline std::map<RVA_t, std::shared_ptr<Function>> function()const { return functions_;}
 
@@ -42,7 +29,7 @@ public:
 
 protected:
 
-  std::set<Entrance> collectEntryPoints();
+  void collectEntryPoints();
 
   void disassembleBlock(std::shared_ptr<BasicBlock> block, std::stack<RVA_t>& workList);
 
@@ -52,6 +39,8 @@ protected:
 
   void collectFunctionBlocks(std::shared_ptr<Function> func);
 
+  RVA_t findNextUnexploredAddress(MemoryRegion& codeRegion);
+
   void exploreCodeRegion();
 
 
@@ -60,7 +49,7 @@ protected:
   std::shared_ptr<BasicBlock> getBlock(RVA_t addr);
   std::shared_ptr<BasicBlock> getOrCreateBlock(RVA_t addr, bool* isNew = nullptr);
   std::shared_ptr<BasicBlock> findBlockContaining(RVA_t rva);
-  uint32_t GetGasSize(RVA_t rva);
+  uint32_t GetGapSize(RVA_t rva);
 
   inline void addXref(const Xref& xref) { xrefManager_ .addXref( xref); };
 
@@ -73,13 +62,14 @@ protected:
 private:
   BinaryModule& bin_;
 
-  std::set<RVA_t> visitedNode_;
+  std::set<RVA_t> visitedAddresses_;
   std::queue<RVA_t> pendingEntry_;
   std::set<RVA_t> functionEntries_;
 
   std::map<RVA_t, std::shared_ptr<BasicBlock>> blocks_;
   std::map<RVA_t, std::shared_ptr<Function>> functions_;
 
+  std::vector<MemoryRegion> unParseCodeRegion_;
 
   XrefManager xrefManager_;
 };

@@ -35,6 +35,8 @@ bool BinaryModule::load(const std::string& path)
   if(!arch_)
     return false;
 
+
+  analyzer_ = arch_->createInstructionAnalzer();
   return true;
 }
 
@@ -70,22 +72,22 @@ void BinaryModule::addBasicBlock(std::shared_ptr<BasicBlock> bb)
 
 std::optional<Instruction> BinaryModule::disassembleOne(uint64_t addr, size_t* outBytesConsumed)
 {
-  std::vector<uint8_t> buffer = readBytes(addr, arch_->maxInstructionSize());
+  std::span<const uint8_t>bufferView = readBytes(addr, arch_->maxInstructionSize());
 
-  return disasm_->disassembleOne(buffer, addr, outBytesConsumed);
+  return disasm_->disassembleOne(bufferView, addr, outBytesConsumed);
 
 }
 
-std::unique_ptr<InstructionAnalyzer> BinaryModule::instructionAnalyzer() const
+InstructionAnalyzer* BinaryModule::instructionAnalyzer() const
 {
-    return arch_->createInstructionAnalzer();
+    return analyzer_.get();
 }
 
-std::vector<uint8_t> BinaryModule::readBytes(RVA_t rva, size_t size)
+std::span<const uint8_t>  BinaryModule::readBytes(RVA_t rva, size_t size)
 {
   uint64_t va = binary_->imagebase() + rva;
   auto bytyes =  binary_->get_content_from_virtual_address(va, size);
-  return std::vector<uint8_t>(bytyes.begin(), bytyes.end());
+  return bytyes;
 }
 
 std::optional<Addr_t> BinaryModule::readPointer(RVA_t rva)

@@ -17,10 +17,13 @@ CapstoneDisassembler::CapstoneDisassembler(cs_arch arch, cs_mode mode)
       assert(false);
       break;
   }
+
+  cachedInsn_ = cs_malloc(handle_);
 }
 
 CapstoneDisassembler::~CapstoneDisassembler()
 {
+  cs_free(cachedInsn_, 1);
   cs_close(&handle_);
 }
 
@@ -59,24 +62,21 @@ std::vector<Instruction> CapstoneDisassembler::disassemble(std::span<const uint8
 
 std::optional<Instruction> CapstoneDisassembler::disassembleOne(std::span<const uint8_t> code, uint64_t addr, size_t* outBytesConsumed)
 {
-  cs_insn* insn = nullptr;
-  size_t count = cs_disasm(handle_, code.data(), code.size(), addr, 1, &insn);
-  if (count > 0)
-  {
-    if(outBytesConsumed)
-      *outBytesConsumed = insn->size;
+  const uint8_t* codePtr = code.data();
+  size_t codeSize = code.size();
+  uint64_t address = addr;
 
+  // cs_disasm_iter 不分配内存，复用 cachedInsn_
+  if (cs_disasm_iter(handle_, &codePtr, &codeSize, &address, cachedInsn_)) {
     Instruction inst{
-            insn->address,
-            { insn->bytes, insn->bytes + insn->size },
-            insn->mnemonic,
-            insn->op_str,
-            insn->id
+        cachedInsn_->address,
+        {cachedInsn_->bytes, cachedInsn_->bytes + cachedInsn_->size},
+        cachedInsn_->mnemonic,
+        cachedInsn_->op_str,
+        cachedInsn_->id
     };
-
-    // 解码结构化操作数
-    if (decoder_ && insn->detail) {
-      decoder_->decode(insn, inst);
+    if (decoder_ && cachedInsn_->detail) {
+      decoder_->decode(cachedInsn_, inst);
     }
     return inst;
   }

@@ -2,6 +2,7 @@
 
 #include <string>
 #include <map>
+#include <span>
 
 #include <LIEF/LIEF.hpp>
 #include "BinaryTypes.h"
@@ -45,9 +46,9 @@ public:
 
   virtual std::optional<Instruction> disassembleOne(uint64_t addr, size_t* outBytesConsumed = nullptr);
 
-  virtual std::unique_ptr<InstructionAnalyzer> instructionAnalyzer()const;
+  virtual InstructionAnalyzer* instructionAnalyzer()const;
 
-  virtual std::vector<uint8_t> readBytes(RVA_t rva, size_t size);
+  virtual std::span<const uint8_t> readBytes(RVA_t rva, size_t size);
 
   virtual std::optional<Addr_t> readPointer(RVA_t rva);
 
@@ -71,6 +72,7 @@ protected:
 protected:
   std::unique_ptr<Architecture> arch_;
   std::unique_ptr<Disassembler> disasm_;
+  std::unique_ptr<InstructionAnalyzer> analyzer_;
 
   std::shared_ptr<LIEF::Binary> binary_;
   

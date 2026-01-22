@@ -1,4 +1,5 @@
 ﻿#include "MemoryRegion.h"
+#include <assert.h>
 
 MemoryRegion::MemoryRegion(Protect protect, RVA_t start, RVA_t end)
 :protect_(protect)
@@ -8,6 +9,13 @@ MemoryRegion::MemoryRegion(Protect protect, RVA_t start, RVA_t end)
 
 bool MemoryRegion::allocate(RVA_t start, RVA_t end)
 {
+  if(end < start)
+  {
+    assert(false);
+    return false;
+  }
+
+
   // 找到包含这个区域的空闲块，分割它
   auto it = findFreeBlock(start);
   if (it == freeBlocks_.end()) return false;
@@ -28,7 +36,12 @@ bool MemoryRegion::allocate(RVA_t start, RVA_t end)
 
 std::set<AddressRange>::iterator MemoryRegion::findFreeBlock(RVA_t addr)
 {
-  for (auto it = freeBlocks_.begin(); it != freeBlocks_.end(); ++it) {
+  if (freeBlocks_.empty()) return freeBlocks_.end();
+
+  // upper_bound 找到第一个 start > addr 的块
+  auto it = freeBlocks_.upper_bound({ addr, addr });
+  if (it != freeBlocks_.begin()) {
+    --it;
     if (it->contains(addr)) return it;
   }
   return freeBlocks_.end();

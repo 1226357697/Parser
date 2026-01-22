@@ -20,6 +20,7 @@ public:
 
 private:
   csh handle_;
+  cs_insn* cachedInsn_ = nullptr;
 
   std::unique_ptr<OperandDecoder> decoder_;
 };

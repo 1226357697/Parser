@@ -4,17 +4,34 @@
 #include <format>
 #include <iostream>
 #include <filesystem>
+#include <chrono>
+#include <capstone/capstone.h>
 #include"JumpTableAnalyzer.h"
 
+#define INVALID_RVA (-1)
 
 Parser::Parser(BinaryModule& bin)
 :bin_(bin)
 {
+  std::vector<MemoryRegion> unParseCodeRegion;
 
+  for (auto& section : bin_.getSections())
+  {
+    if (bin_.isCodeSection(&section))
+    {
+      MemoryRegion region(MemoryRegion::Protect::Execute, section.virtual_address(), section.virtual_address() + section.size());
+
+      unParseCodeRegion_.push_back(region);
+    }
+  }
+
+  assert(unParseCodeRegion_.size() == 1);
 }
 
 void Parser::analyze()
 {
+  auto start = std::chrono::high_resolution_clock::now();
+
   // 1. 收集确定入口
   collectEntryPoints();
 
@@ -23,24 +40,52 @@ void Parser::analyze()
     RVA_t entry = pendingEntry_.front();
     pendingEntry_.pop();
 
-    if (visitedNode_.count(entry)) continue;
+    if (visitedAddresses_.count(entry)) continue;
 
-    exploreBlock(entry, true);
+    exploreBlock(entry, ExploreType::Function, &unParseCodeRegion_.at(0));
   }
   // 3. 分析跳转表，可能发现新块
   analyzeJumpTables();
 
-  // 4. 构建函数
-  buildFunctions();
 
-  // 5. 扫描未探索的代码区域
+  //printBlocks();
+  //printFunction();
+
+  // 4. 扫描未探索的代码区域
   exploreCodeRegion();
 
+
+
+  // 5. 分析跳转表，可能发现新块
+  analyzeJumpTables();
+
+  // 6. 构建函数
+  buildFunctions();
+
+
+
+  //printBlocks();
+  printFunction();
+
+  auto end = std::chrono::high_resolution_clock::now();
+  auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+
+  // 输出
+  auto totalSeconds = duration.count() / 1000;
+  auto minutes = totalSeconds / 60;
+  auto seconds = totalSeconds % 60;
+  auto ms = duration.count() % 1000;
+
+  printf("Analyze completed in %lld min %lld sec %lld ms\n", minutes, seconds, ms);
 }
 
-void Parser::exploreBlock(RVA_t entry, bool isFunctionEntry )
+void Parser::exploreBlock(RVA_t entry, ExploreType entryType, MemoryRegion* region)
 {
-  if(isFunctionEntry)
+  if (entry == 0x5DB0)
+  {
+    int k=0;
+  }
+  if(entryType == ExploreType::Function)
     functionEntries_.insert(entry);
 
   std::stack<RVA_t> workList;
@@ -50,23 +95,31 @@ void Parser::exploreBlock(RVA_t entry, bool isFunctionEntry )
     RVA_t rva = workList.top();
     workList.pop();
 
-    if (visitedNode_.count(rva)) continue;
-    visitedNode_.insert(rva);
+    if (visitedAddresses_.count(rva)) continue;
+    visitedAddresses_.insert(rva);
 
     auto block = getOrCreateBlock(rva);
-    if (isFunctionEntry && rva == entry)
+    if (entryType == ExploreType::Function && rva == entry)
     {
       block->setTag(BasicBlock::Tag::kFunctionEntry);
     }
 
     disassembleBlock(block, workList);
+
+    if(region)
+      region->allocate(block->startAddress(), block->endAddress());
   }
 }
 
-void Parser::disassembleBlock(std::shared_ptr<BasicBlock> block,
-  std::stack<RVA_t>& workList) {
+void Parser::disassembleBlock(std::shared_ptr<BasicBlock> block, std::stack<RVA_t>& workList) 
+{
   RVA_t rva = block->startAddress();
   auto analyzer = bin_.instructionAnalyzer();
+
+  if (rva == 0x03e2e0e0)
+  {
+    int j =0;
+  }
 
   while (auto inst = bin_.disassembleOne(rva)) {
     auto instPtr = std::make_shared<Instruction>(std::move(*inst));
@@ -115,7 +168,7 @@ void Parser::disassembleBlock(std::shared_ptr<BasicBlock> block,
     rva += instPtr->size();
 
     // 遇到已有块
-    if (visitedNode_.count(rva)) {
+    if (visitedAddresses_.count(rva)) {
       block->setEndType(BasicBlock::EndType::kFallThrough);
       linkBlocks(block, getOrCreateBlock(rva));
       return;
@@ -141,7 +194,7 @@ void Parser::analyzeJumpTables() {
         RVA_t targetRva = bin_.VA2RVA(target);
 
         // 探索新目标
-        if (!visitedNode_.count(targetRva)) {
+        if (!visitedAddresses_.count(targetRva)) {
           exploreBlock(targetRva);  // 复用探索逻辑
         }
 
@@ -201,33 +254,82 @@ void Parser::collectFunctionBlocks(std::shared_ptr<Function> func)
 
 }
 
-void Parser::exploreCodeRegion()
-{
-  printBlocks();
-  printFunction();
+RVA_t Parser::findNextUnexploredAddress(MemoryRegion& codeRegion) {
+  for (const auto& region : codeRegion.freeBlock()) {
+    RVA_t addr = region.start;
 
-  std::vector<MemoryRegion> unParseCodeRegion;
+    // 用 lower_bound 快速跳过已访问的地址
+    auto it = visitedAddresses_.lower_bound(addr);
 
-  for (auto& section : bin_.getSections())
-  {
-    if (bin_.isCodeSection(&section))
-    {
-      MemoryRegion region(MemoryRegion::Protect::Execute, section.virtual_address(), section.virtual_address() + section.size());
-
-      unParseCodeRegion.push_back(region);
+    // 找到第一个不在 visitedAddresses_ 中的地址
+    while (addr < region.end) {
+      if (it == visitedAddresses_.end() || *it != addr) {
+        return addr;  // 找到未访问的地址
+      }
+      addr++;
+      if (it != visitedAddresses_.end() && *it < addr) {
+        it = visitedAddresses_.lower_bound(addr);
+      }
     }
   }
+  return INVALID_RVA;
+}
 
-  assert(unParseCodeRegion.size() == 1);
-  MemoryRegion& codeRegion = unParseCodeRegion.at(0);
+void Parser::exploreCodeRegion()
+{
 
-  for (auto& [rva, func ] : functions_)
-  {
-    codeRegion.allocate(func->rva(), func->end());
+
+  MemoryRegion& codeRegion = unParseCodeRegion_.at(0);
+
+  while (true) {
+    // 找到第一个未探索的地址
+    RVA_t start = findNextUnexploredAddress(codeRegion);
+    if (start == INVALID_RVA) break;
+    if (start == 0x5dd1)
+    {
+      int j =0;
+    }
+    // 跳过 NOP
+    uint32_t gapSize = GetGapSize(start);
+    if (gapSize > 0) {
+      codeRegion.allocate(start, start + gapSize);
+      continue;
+    }
+
+    // 检查是否可反汇编
+    auto inst = bin_.disassembleOne(start);
+    if (!inst) {
+      codeRegion.allocate(start, start + 1);  // 标记为数据
+      continue;
+    }
+    if (inst->opCode ==X86_INS_MOV || inst->opCode == X86_INS_PUSH )
+    {
+      int j =0;
+    }
+    else
+    {
+      codeRegion.allocate(start, start + inst->size());  // 标记为数据
+      continue;
+    }
+
+    // 记录探索前的块数量
+    size_t blocksBefore = blocks_.size();
+
+    // 探索
+    exploreBlock(start, ExploreType::Function, &codeRegion);
+
+    //// 只更新新增的块
+    //auto it = blocks_.begin();
+    //std::advance(it, blocksBefore);  // 跳到新增的块
+    //for (; it != blocks_.end(); ++it) {
+    //  codeRegion.allocate(it->second->startAddress(), it->second->endAddress());
+    //}
+
+    //// 更新 codeRegion
+    //for (auto& [rva, block] : blocks_) {
+    //  codeRegion.allocate(block->startAddress(), block->endAddress());
+    //}
   }
-
-  printRemainRegion(codeRegion);
-
 
 }
 
@@ -239,10 +341,8 @@ void Parser::linkBlocks(std::shared_ptr<BasicBlock> predecessor, std::shared_ptr
   successor->addPredecessor(predecessor);
 }
 
-std::set<Entrance> Parser::collectEntryPoints()
+void Parser::collectEntryPoints()
 {
-  std::set<Entrance> entrance;
-
   if (bin_.entryPoint() != 0)
   {
     //entrance.insert({ EntranceType::kFunction, bin_.entryPoint()});
@@ -255,7 +355,6 @@ std::set<Entrance> Parser::collectEntryPoints()
     pendingEntry_.push(item.rva);
   }
 
-  return entrance;
 }
 
 
@@ -295,13 +394,10 @@ std::shared_ptr<BasicBlock> Parser::getOrCreateBlock(RVA_t addr, bool* isNew)
 
 std::shared_ptr<BasicBlock> Parser::findBlockContaining(RVA_t rva)
 {
+  if (blocks_.empty()) return nullptr;
+
   auto iter = blocks_.upper_bound(rva);
-  if (iter == blocks_.begin())
-  {
-    iter = blocks_.upper_bound(rva);
-    if (iter == blocks_.begin())
-      return nullptr;
-  }
+  if (iter == blocks_.begin()) return nullptr;
 
   --iter;
   if (rva >= iter->second->startAddress() && rva < iter->second->endAddress())
@@ -310,15 +406,30 @@ std::shared_ptr<BasicBlock> Parser::findBlockContaining(RVA_t rva)
   return nullptr;
 }
 
-uint32_t Parser::GetGasSize(RVA_t rva)
+uint32_t Parser::GetGapSize(RVA_t rva)
 {
   uint32_t gasSize = 0;
   auto analyzer = bin_.instructionAnalyzer();
 
   RVA_t currentRva = rva;
-  while (auto inst = bin_.disassembleOne(currentRva))
+  while (true)
   {
-    if (analyzer->isNop(*inst))
+    if (currentRva == 0x14f92)
+    {
+      int  k = 0;
+    }
+    if (!bin_.validAddress(currentRva))
+    {
+      gasSize ++;
+      currentRva++;
+      continue;
+    }
+
+    auto inst = bin_.disassembleOne(currentRva);
+    if(!inst)
+      break;
+
+    if (analyzer->isNop(*inst) || analyzer->isInterrupt(*inst))
     {
       gasSize += inst->size();
     }
