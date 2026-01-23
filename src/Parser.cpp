@@ -17,9 +17,9 @@ Parser::Parser(BinaryModule& bin)
 
   for (auto& section : bin_.getSections())
   {
-    if (bin_.isCodeSection(&section))
+    if (section.executable)
     {
-      MemoryRegion region(MemoryRegion::Protect::Execute, section.virtual_address(), section.virtual_address() + section.size());
+      MemoryRegion region(MemoryRegion::Protect::Execute, section.start, std::min(section.virtualEnd, section.rawEnd) );
 
       unParseCodeRegion_.push_back(region);
     }
@@ -65,7 +65,7 @@ void Parser::analyze()
 
 
   //printBlocks();
-  //printFunction();
+  printFunction();
 
   auto end = std::chrono::high_resolution_clock::now();
   auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);

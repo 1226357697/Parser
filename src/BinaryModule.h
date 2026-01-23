@@ -27,6 +27,15 @@ struct FuntionInfo
   FunctionType type;
 };
 
+struct SectionInfo {
+  RVA_t start;        // 起始地址
+  RVA_t virtualEnd;   // 内存映射结束 (start + VirtualSize)
+  RVA_t rawEnd;       // 实际数据结束 (start + SizeOfRawData)
+  bool executable;    // 是否可执行
+  bool readable;      // 是否可读
+  bool writable;      // 是否可写
+};
+
 class BinaryModule
 {
 public:
@@ -40,9 +49,6 @@ public:
   virtual RVA_t entryPoint();
 
   virtual std::vector<FuntionInfo> exportFunctions();
-  
-  virtual void addBasicBlock(std::shared_ptr<BasicBlock> bb);
- 
 
   virtual std::optional<Instruction> disassembleOne(uint64_t addr, size_t* outBytesConsumed = nullptr);
 
@@ -56,22 +62,25 @@ public:
 
   LIEF::Section* getSectionByRva(uint64_t rva) const;
 
+  const SectionInfo* findSection(RVA_t rva) const;
+
+  virtual void cacheSections() = 0;
+  
+  bool hasFileData(RVA_t rva);
+
   // 地址是否在任意段中（有映射）
   bool isValidAddress(RVA_t rva) const;
 
   // 地址是否在代码段中（可执行）
   bool isCodeAddress(RVA_t rva) const;
 
-  // 地址是否在可读数据段中（用于跳转表）
   bool isReadableAddress(RVA_t rva) const;
-
-  bool isValidCodeAddress(RVA_t rva) const;
 
   virtual uint32_t getPointerSize();
 
-  bool isCodeSection(LIEF::Section* section) const ;
+  virtual bool isCodeSection(LIEF::Section* section) const  = 0;
 
-  LIEF::Binary::it_sections getSections()const;
+  const std::vector<SectionInfo>&  getSections()const;
 protected:
 
   virtual bool doLoad(const std::string& path) = 0;
@@ -81,6 +90,8 @@ protected:
   std::unique_ptr<Disassembler> disasm_;
   std::unique_ptr<InstructionAnalyzer> analyzer_;
 
+
+  std::vector<SectionInfo> sectionCache_;  // 缓存，按 start 排序
   std::shared_ptr<LIEF::Binary> binary_;
   
   std::vector<std::shared_ptr<BasicBlock>> basicBlocks_;

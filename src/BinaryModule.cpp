@@ -37,6 +37,9 @@ bool BinaryModule::load(const std::string& path)
 
 
   analyzer_ = arch_->createInstructionAnalzer();
+
+  cacheSections();
+
   return true;
 }
 
@@ -65,11 +68,6 @@ std::vector<FuntionInfo> BinaryModule::exportFunctions()
   return exportFunction;
 }
 
-void BinaryModule::addBasicBlock(std::shared_ptr<BasicBlock> bb)
-{
-  basicBlocks_.push_back(bb);
-}
-
 std::optional<Instruction> BinaryModule::disassembleOne(uint64_t addr, size_t* outBytesConsumed)
 {
   std::span<const uint8_t>buffer = readBytes(addr, arch_->maxInstructionSize());
@@ -96,7 +94,6 @@ std::optional<Addr_t> BinaryModule::readPointer(RVA_t rva)
   if(bytes.empty())
     return std::nullopt;
 
-
   Addr_t v =0;
   if(getPointerSize() == 4)
     v = *(uint32_t*)bytes.data();
@@ -122,49 +119,44 @@ LIEF::Section* BinaryModule::getSectionByRva(uint64_t rva) const {
   }
   return nullptr;
 }
+
+const SectionInfo* BinaryModule::findSection(RVA_t rva) const
+{
+  if (sectionCache_.empty()) return nullptr;
+
+  // upper_bound 找到第一个 start > rva 的
+  auto it = std::upper_bound(
+    sectionCache_.begin(),
+    sectionCache_.end(),
+    rva,
+    [](RVA_t addr, const SectionInfo& s) { return addr < s.start; }
+  );
+
+  // 回退一个，检查是否包含 rva
+  if (it != sectionCache_.begin()) {
+    --it;
+    if (rva >= it->start && rva < it->virtualEnd) {
+      return &(*it);
+    }
+  }
+  return nullptr;
+}
+
 bool BinaryModule::isValidAddress(RVA_t rva) const
 {
-  return getSectionByRva(rva) != nullptr;
+  return findSection(rva) != nullptr;
 }
 
 bool BinaryModule::isCodeAddress(RVA_t rva) const
 {
-  LIEF::Section* section = getSectionByRva(rva);
-  return section && isCodeSection(section);
+  const SectionInfo* info = findSection(rva);
+  return info && info->executable && rva < info->rawEnd;
 }
-
 
 bool BinaryModule::isReadableAddress(RVA_t rva) const
 {
-  LIEF::Section* section = getSectionByRva(rva);
-  if (!section) return false;
-
-  auto* peSection = dynamic_cast<LIEF::PE::Section*>(section);
-  if (!peSection) return false;
-
-  return (peSection->characteristics() &
-    static_cast<uint32_t>(LIEF::PE::Section::CHARACTERISTICS::MEM_READ)) != 0;
-}
-
-bool BinaryModule::isValidCodeAddress(RVA_t rva) const
-{
-  LIEF::PE::Binary* pebin = dynamic_cast<LIEF::PE::Binary*>(binary_.get());
-  for (const auto& section : pebin->sections()) {
-    uint64_t start = section.virtual_address();
-    uint64_t virtualEnd = start + section.virtual_size();
-
-    if (rva >= start && rva < virtualEnd) {
-      // 1. 必须是代码段
-      if (!isCodeSection((LIEF::Section*)(&section))) {
-        return false;
-      }
-
-      // 2. 必须在文件数据范围内
-      uint64_t rawEnd = start + section.sizeof_raw_data();
-      return rva < rawEnd;
-    }
-  }
-  return false;
+  const SectionInfo* info = findSection(rva);
+  return info && info->readable && rva < info->rawEnd;
 }
 
 uint32_t BinaryModule::getPointerSize()
@@ -172,17 +164,7 @@ uint32_t BinaryModule::getPointerSize()
   return binary_->header().is_32() ? 4 : 8;
 }
 
-bool BinaryModule::isCodeSection(LIEF::Section* section) const
+const std::vector<SectionInfo>& BinaryModule::getSections() const
 {
-  auto* peSection = dynamic_cast<LIEF::PE::Section*>(section);
-  if (!peSection)
-    return false;
-
-   return (peSection->characteristics() &
-    static_cast<uint32_t>(LIEF::PE::Section::CHARACTERISTICS::MEM_EXECUTE)) != 0;;
-}
-
-LIEF::Binary::it_sections BinaryModule::getSections() const
-{
-    return binary_->sections();
+    return sectionCache_;
 }
