@@ -120,6 +120,8 @@ void Parser::disassembleBlock(std::shared_ptr<BasicBlock> block, std::stack<RVA_
     // 处理控制流
     if (analyzer->isCall(*instPtr)) {
       if (auto target = analyzer->getCallTarget(*instPtr)) {
+        addXref({ rva, static_cast<RVA_t>(*target), XrefType::kCall });
+
         pendingEntry_.push(*target);  // 发现新块
       }
     }
@@ -128,6 +130,8 @@ void Parser::disassembleBlock(std::shared_ptr<BasicBlock> block, std::stack<RVA_
       block->setEndType(BasicBlock::EndType::kConditionalJump);
 
       if (auto target = analyzer->getJumpTarget(*instPtr)) {
+        addXref({ rva, static_cast<RVA_t>(*target), XrefType::kJmp });
+
         workList.push(*target);
         linkBlocks(block, getOrCreateBlock(*target));
       }
@@ -145,6 +149,8 @@ void Parser::disassembleBlock(std::shared_ptr<BasicBlock> block, std::stack<RVA_
       else {
         block->setEndType(BasicBlock::EndType::kUnconditionalJump);
         if (auto target = analyzer->getJumpTarget(*instPtr)) {
+          addXref({ rva, static_cast<RVA_t>(*target), XrefType::kJmp });
+
           workList.push(*target);
           linkBlocks(block, getOrCreateBlock(*target));
         }
@@ -295,7 +301,7 @@ void Parser::exploreCodeRegion()
     }
     if (inst->opCode ==X86_INS_MOV || inst->opCode == X86_INS_PUSH )
     {
-      int j =0;
+      
     }
     else
     {
