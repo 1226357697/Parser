@@ -56,13 +56,20 @@ public:
 
   LIEF::Section* getSectionByRva(uint64_t rva) const;
 
-  virtual bool validAddress(RVA_t rva);
+  // 地址是否在任意段中（有映射）
+  bool isValidAddress(RVA_t rva) const;
 
-  virtual bool inCodeSegment(RVA_t rva);
+  // 地址是否在代码段中（可执行）
+  bool isCodeAddress(RVA_t rva) const;
+
+  // 地址是否在可读数据段中（用于跳转表）
+  bool isReadableAddress(RVA_t rva) const;
+
+  bool isValidCodeAddress(RVA_t rva) const;
 
   virtual uint32_t getPointerSize();
 
-  bool isCodeSection(LIEF::Section* section);
+  bool isCodeSection(LIEF::Section* section) const ;
 
   LIEF::Binary::it_sections getSections()const;
 protected:

@@ -54,7 +54,7 @@ std::vector<Addr_t> JumpTableAnalyzer::probeJumpTable(Addr_t tableBase, int dire
     Addr_t targetVA = *targetOpt;
     RVA_t targetRva = bin_.VA2RVA(targetVA);
 
-    if (!bin_.validAddress(targetRva)) break;
+    if (!bin_.isCodeAddress(targetRva)) break;
 
     targets.push_back(targetVA);
   }

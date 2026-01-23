@@ -65,7 +65,7 @@ void Parser::analyze()
 
 
   //printBlocks();
-  printFunction();
+  //printFunction();
 
   auto end = std::chrono::high_resolution_clock::now();
   auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
@@ -279,6 +279,7 @@ void Parser::exploreCodeRegion()
     RVA_t start = findNextUnexploredAddress(codeRegion);
     if (start == INVALID_RVA) break;
 
+
     // 跳过 NOP
     uint32_t gapSize = GetGapSize(start);
     if (gapSize > 0) {
@@ -398,35 +399,28 @@ std::shared_ptr<BasicBlock> Parser::findBlockContaining(RVA_t rva)
 
 uint32_t Parser::GetGapSize(RVA_t rva)
 {
-  uint32_t gasSize = 0;
+  uint32_t gapSize = 0;
   auto analyzer = bin_.instructionAnalyzer();
 
   RVA_t currentRva = rva;
-  while (true)
-  {
-    if (!bin_.validAddress(currentRva))
+  while (bin_.isCodeAddress(currentRva)) {  // 只在代码段内检查
+    if (currentRva  == 0x14ec6)
     {
-      gasSize ++;
-      currentRva++;
-      continue;
+      int j =0;
     }
 
     auto inst = bin_.disassembleOne(currentRva);
-    if(!inst)
-      break;
+    if (!inst) break;
 
-    if (analyzer->isNop(*inst) || analyzer->isInterrupt(*inst))
-    {
-      gasSize += inst->size();
+    if (analyzer->isNop(*inst) || analyzer->isInterrupt(*inst)) {
+      gapSize += inst->size();
+      currentRva += inst->size();
     }
-    else
-    {
+    else {
       break;
     }
-
-    currentRva += inst->size();
   }
-  return gasSize;
+  return gapSize;
 }
 
 void Parser::printSummary()

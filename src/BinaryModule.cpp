@@ -72,9 +72,9 @@ void BinaryModule::addBasicBlock(std::shared_ptr<BasicBlock> bb)
 
 std::optional<Instruction> BinaryModule::disassembleOne(uint64_t addr, size_t* outBytesConsumed)
 {
-  std::span<const uint8_t>bufferView = readBytes(addr, arch_->maxInstructionSize());
+  std::span<const uint8_t>buffer = readBytes(addr, arch_->maxInstructionSize());
 
-  return disasm_->disassembleOne(bufferView, addr, outBytesConsumed);
+  return disasm_->disassembleOne(buffer, addr, outBytesConsumed);
 
 }
 
@@ -122,21 +122,49 @@ LIEF::Section* BinaryModule::getSectionByRva(uint64_t rva) const {
   }
   return nullptr;
 }
-
-bool BinaryModule::validAddress(RVA_t rva)
+bool BinaryModule::isValidAddress(RVA_t rva) const
 {
-  LIEF::Section* section = getSectionByRva(rva);
-
-  return section;
+  return getSectionByRva(rva) != nullptr;
 }
 
-bool BinaryModule::inCodeSegment(RVA_t rva)
+bool BinaryModule::isCodeAddress(RVA_t rva) const
 {
   LIEF::Section* section = getSectionByRva(rva);
-  if (!section)
-    return false;
+  return section && isCodeSection(section);
+}
 
-  return isCodeSection(section);
+
+bool BinaryModule::isReadableAddress(RVA_t rva) const
+{
+  LIEF::Section* section = getSectionByRva(rva);
+  if (!section) return false;
+
+  auto* peSection = dynamic_cast<LIEF::PE::Section*>(section);
+  if (!peSection) return false;
+
+  return (peSection->characteristics() &
+    static_cast<uint32_t>(LIEF::PE::Section::CHARACTERISTICS::MEM_READ)) != 0;
+}
+
+bool BinaryModule::isValidCodeAddress(RVA_t rva) const
+{
+  LIEF::PE::Binary* pebin = dynamic_cast<LIEF::PE::Binary*>(binary_.get());
+  for (const auto& section : pebin->sections()) {
+    uint64_t start = section.virtual_address();
+    uint64_t virtualEnd = start + section.virtual_size();
+
+    if (rva >= start && rva < virtualEnd) {
+      // 1. 必须是代码段
+      if (!isCodeSection((LIEF::Section*)(&section))) {
+        return false;
+      }
+
+      // 2. 必须在文件数据范围内
+      uint64_t rawEnd = start + section.sizeof_raw_data();
+      return rva < rawEnd;
+    }
+  }
+  return false;
 }
 
 uint32_t BinaryModule::getPointerSize()
@@ -144,7 +172,7 @@ uint32_t BinaryModule::getPointerSize()
   return binary_->header().is_32() ? 4 : 8;
 }
 
-bool BinaryModule::isCodeSection(LIEF::Section* section)
+bool BinaryModule::isCodeSection(LIEF::Section* section) const
 {
   auto* peSection = dynamic_cast<LIEF::PE::Section*>(section);
   if (!peSection)
