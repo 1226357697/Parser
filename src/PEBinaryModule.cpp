@@ -1,5 +1,5 @@
 #include "PEBinaryModule.h"
-
+#include <iostream>
 using namespace LIEF::PE;
 
 bool PEBinaryModule::doLoad(const std::string& path)
@@ -10,6 +10,11 @@ bool PEBinaryModule::doLoad(const std::string& path)
   
 
   return true;
+}
+
+std::vector<ExceptionEntry> PEBinaryModule::getExceptionEntries()
+{
+  return std::vector<ExceptionEntry>();
 }
 
 bool PEBinaryModule::isCodeSection(LIEF::Section* section) const

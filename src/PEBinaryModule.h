@@ -10,6 +10,8 @@ public:
 protected:
   virtual bool doLoad(const std::string& path) override;
 
+  virtual std::vector<ExceptionEntry> getExceptionEntries() override;
+
   virtual bool isCodeSection(LIEF::Section* section) const override;
 
   virtual void cacheSections() override;

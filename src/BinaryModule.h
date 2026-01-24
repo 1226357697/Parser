@@ -34,6 +34,13 @@ struct SectionInfo {
   bool executable;    // 是否可执行
   bool readable;      // 是否可读
   bool writable;      // 是否可写
+};  
+
+struct ExceptionEntry {
+  RVA_t funcStart;
+  RVA_t funcEnd;
+  RVA_t handlerRva;      // 异常处理函数
+  RVA_t unwindInfoRva;   // x64 unwind info
 };
 
 class BinaryModule
@@ -49,6 +56,8 @@ public:
   virtual RVA_t entryPoint();
 
   virtual std::vector<FuntionInfo> exportFunctions();
+
+  virtual std::vector<ExceptionEntry> getExceptionEntries() = 0;
 
   virtual std::optional<Instruction> disassembleOne(uint64_t addr, size_t* outBytesConsumed = nullptr);
 

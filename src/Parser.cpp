@@ -44,25 +44,24 @@ void Parser::analyze()
 
     exploreBlock(entry, ExploreType::Function, &unParseCodeRegion_.at(0));
   }
-  // 3. 分析跳转表，可能发现新块
+
+  // 4. 分析跳转表，可能发现新块
   analyzeJumpTables();
 
 
   //printBlocks();
   //printFunction();
 
-  // 4. 扫描未探索的代码区域
+  // 5. 扫描未探索的代码区域
   exploreCodeRegion();
 
 
 
-  // 5. 分析跳转表，可能发现新块
+  // 6. 分析跳转表，可能发现新块
   analyzeJumpTables();
 
-  // 6. 构建函数
+  // 7. 构建函数
   buildFunctions();
-
-
 
   //printBlocks();
   printFunction();

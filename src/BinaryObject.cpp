@@ -1,0 +1,1 @@
+﻿#include "BinaryObject.h"

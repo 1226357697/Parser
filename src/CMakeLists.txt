@@ -40,6 +40,14 @@ set(
     MemoryRegion.cpp
     DotFileGenerator.h
     DotFileGenerator.cpp
+    Linker.h
+    Linker.cpp
+    BinaryObject.h
+    BinaryObject.cpp
+    Relocation.h
+    Relocation.cpp
+    Loader.h
+    Loader.cpp
     main.cpp
 )
 
